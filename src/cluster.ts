@@ -1,7 +1,7 @@
 import {decompress} from '@mongodb-js/zstd'
 import {spawn, type ChildProcess} from 'node:child_process'
 import {readFileSync} from 'node:fs'
-import {mkdtemp, open, readFile, rm} from 'node:fs/promises'
+import {cp, mkdir, mkdtemp, open, readFile, rm} from 'node:fs/promises'
 import {createServer, type Server} from 'node:http'
 import {constants, createSecureServer, type Http2SecureServer} from 'node:http2'
 import {Agent as HttpsAgent} from 'node:https'
@@ -11,7 +11,6 @@ import {setTimeout as delay} from 'node:timers/promises'
 import {MultiBar} from 'cli-progress'
 import colors from 'colors/safe.js'
 import express, {type NextFunction, type Response} from 'express'
-import fse from 'fs-extra'
 import got, {type Got, HTTPError, RequestError} from 'got'
 import http2Express from 'http2-express'
 import ipaddr from 'ipaddr.js'
@@ -27,6 +26,7 @@ import {Tail} from 'tail'
 import {config, type OpenbmclapiAgentConfiguration, OpenbmclapiAgentConfigurationSchema} from './config.js'
 import {FileListSchema} from './constants.js'
 import {validateFile} from './file.js'
+import {pathExists, writeFileWithParents} from './fs.js'
 import {Keepalive} from './keepalive.js'
 import {logger} from './logger.js'
 import {beforeError} from './modules/got-hooks.js'
@@ -348,8 +348,8 @@ export class Cluster {
     const confTemplate = await readFile(join(rootDir, 'nginx', templateFile), 'utf8')
     logger.debug({confFile}, 'nginx conf')
 
-    await fse.copy(join(rootDir, 'nginx'), dirname(confFile), {overwrite: true})
-    await fse.outputFile(
+    await cp(join(rootDir, 'nginx'), dirname(confFile), {recursive: true, force: true})
+    await writeFileWithParents(
       confFile,
       template(confTemplate)({
         root: pwd,
@@ -363,7 +363,7 @@ export class Cluster {
 
     const logFile = join(rootDir, 'access.log')
     const logFd = await open(logFile, 'a')
-    await fse.ftruncate(logFd.fd)
+    await logFd.truncate()
 
     this.nginxProcess = spawn('nginx', ['-c', confFile], {
       stdio: [null, logFd.fd, 'inherit'],
@@ -396,7 +396,7 @@ export class Cluster {
     })
 
     this.interval = setInterval(() => {
-      void fse.ftruncate(logFd.fd)
+      void logFd.truncate()
     }, ms('60s'))
   }
 
@@ -529,8 +529,8 @@ export class Cluster {
         throw new Error('请求证书失败', {cause: err})
       }
     }
-    await fse.outputFile(join(this.tmpDir, 'cert.pem'), cert.cert)
-    await fse.outputFile(join(this.tmpDir, 'key.pem'), cert.key)
+    await writeFileWithParents(join(this.tmpDir, 'cert.pem'), cert.cert)
+    await writeFileWithParents(join(this.tmpDir, 'key.pem'), cert.key)
   }
 
   public async useSelfCert(): Promise<void> {
@@ -541,15 +541,16 @@ export class Cluster {
       throw new Error('缺少ssl私钥')
     }
 
-    if (await fse.pathExists(config.sslCert)) {
-      await fse.copy(config.sslCert, join(this.tmpDir, 'cert.pem'))
+    await mkdir(this.tmpDir, {recursive: true})
+    if (await pathExists(config.sslCert)) {
+      await cp(config.sslCert, join(this.tmpDir, 'cert.pem'), {force: true})
     } else {
-      await fse.outputFile(join(this.tmpDir, 'cert.pem'), config.sslCert)
+      await writeFileWithParents(join(this.tmpDir, 'cert.pem'), config.sslCert)
     }
-    if (await fse.pathExists(config.sslKey)) {
-      await fse.copy(config.sslKey, join(this.tmpDir, 'key.pem'))
+    if (await pathExists(config.sslKey)) {
+      await cp(config.sslKey, join(this.tmpDir, 'key.pem'), {force: true})
     } else {
-      await fse.outputFile(join(this.tmpDir, 'key.pem'), config.sslKey)
+      await writeFileWithParents(join(this.tmpDir, 'key.pem'), config.sslKey)
     }
   }
 

@@ -1,10 +1,10 @@
 import Bluebird from 'bluebird'
 import colors from 'colors/safe.js'
 import type {Response} from 'express'
-import fse from 'fs-extra'
-import {readdir, rm, stat, unlink, writeFile} from 'node:fs/promises'
+import {mkdir, readdir, rm, stat, unlink, writeFile} from 'node:fs/promises'
 import {join, sep} from 'node:path'
 import {min} from 'lodash-es'
+import {pathExists, writeFileWithParents} from '../fs.js'
 import {logger} from '../logger.js'
 import {IFileInfo, IGCCounter} from '../types.js'
 import {hashToFilename} from '../util.js'
@@ -15,7 +15,7 @@ export class FileStorage implements IStorage {
 
   public async check(): Promise<boolean> {
     try {
-      await fse.mkdirp(this.cacheDir)
+      await mkdir(this.cacheDir, {recursive: true})
       await writeFile(join(this.cacheDir, '.check'), '')
       return true
     } catch (e) {
@@ -27,11 +27,11 @@ export class FileStorage implements IStorage {
   }
 
   public async writeFile(path: string, content: Buffer): Promise<void> {
-    await fse.outputFile(join(this.cacheDir, path), content)
+    await writeFileWithParents(join(this.cacheDir, path), content)
   }
 
   public async exists(path: string): Promise<boolean> {
-    return await fse.pathExists(join(this.cacheDir, path))
+    return await pathExists(join(this.cacheDir, path))
   }
 
   public async getMissingFiles(files: IFileInfo[]): Promise<IFileInfo[]> {
