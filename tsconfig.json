@@ -1,11 +1,12 @@
 {
-  "extends": ["@tsconfig/node18"],
+  "extends": ["@tsconfig/node24"],
   "compilerOptions": {
     "sourceMap": true,
     "noUnusedLocals": true,
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true,
     "resolveJsonModule": true,
+    "rootDir": "src",
     "outDir": "dist",
     "skipLibCheck": true
   },

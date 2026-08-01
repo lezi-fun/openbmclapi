@@ -3,14 +3,14 @@ import {ChildProcess, spawn} from 'child_process'
 import {MultiBar} from 'cli-progress'
 import colors from 'colors/safe.js'
 import delay from 'delay'
-import express, {type NextFunction, type Request, type Response} from 'express'
+import express, {type NextFunction, type Response} from 'express'
 import {readFileSync} from 'fs'
 import fse from 'fs-extra'
 import {mkdtemp, open, readFile, rm} from 'fs/promises'
 import got, {type Got, HTTPError, RequestError} from 'got'
 import {createServer, Server} from 'http'
 import {createSecureServer} from 'http2'
-import http2Express from 'http2-express-bridge'
+import http2Express from 'http2-express'
 import {Agent as HttpsAgent} from 'https'
 import ipaddr from 'ipaddr.js'
 import stringifySafe from 'json-stringify-safe'
@@ -35,11 +35,13 @@ import {logger} from './logger.js'
 import {beforeError} from './modules/got-hooks.js'
 import {AuthRouteFactory} from './routes/auth.route.js'
 import MeasureRouteFactory from './routes/measure.route.js'
-import {getStorage, type IStorage} from './storage/base.storage.js'
+import {type DownloadRequest, getStorage, type IStorage} from './storage/base.storage.js'
 import type {TokenManager} from './token.js'
 import type {IFileList} from './types.js'
 import {setupUpnp} from './upnp.js'
 import {checkSign, hashToFilename} from './util.js'
+
+type ClusterServer = Server | import('http2').Http2SecureServer
 
 interface ICounters {
   hits: number
@@ -48,7 +50,6 @@ interface ICounters {
 
 const whiteListDomain = ['localhost', 'bangbang93.com']
 
-// eslint-disable-next-line @typescript-eslint/naming-convention
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
 export class Cluster {
@@ -71,7 +72,7 @@ export class Cluster {
   private readonly downloadPromise = new Map<string, Promise<void>>()
   private socket?: Socket
 
-  private server?: Server
+  private server?: ClusterServer
 
   public constructor(
     private readonly clusterSecret: string,
@@ -104,15 +105,7 @@ export class Cluster {
           async (options) => {
             const url = options.url
             if (!url) return
-            if (typeof url === 'string') {
-              if (
-                whiteListDomain.some((domain) => {
-                  return url.includes(domain)
-                })
-              ) {
-                options.headers.authorization = `Bearer ${await this.tokenManager.getToken()}`
-              }
-            } else if (
+            if (
               whiteListDomain.some((domain) => {
                 return url.hostname.includes(domain)
               })
@@ -160,7 +153,7 @@ export class Cluster {
         files: [],
       }
     }
-    const decompressed = await decompress(res.body)
+    const decompressed = await decompress(Buffer.from(res.body))
     return {
       files: FileListSchema.fromBuffer(Buffer.from(decompressed)) as IFileList['files'],
     }
@@ -212,11 +205,12 @@ export class Cluster {
                   bar.update(progress.transferred)
                 })
 
-              const isFileCorrect = validateFile(res.body, file.hash)
+              const body = Buffer.from(res.body)
+              const isFileCorrect = validateFile(body, file.hash)
               if (!isFileCorrect) {
                 throw new RequestError(`文件${file.path}校验失败`, new Error(`文件${file.path}校验失败`), res.request)
               }
-              await this.storage.writeFile(hashToFilename(file.hash), res.body, file)
+              await this.storage.writeFile(hashToFilename(file.hash), body, file)
             },
             {
               retries: 10,
@@ -282,7 +276,7 @@ export class Cluster {
     }
   }
 
-  public setupExpress(https: boolean): Server {
+  public setupExpress(https: boolean): ClusterServer {
     const app = http2Express(express)
     app.enable('trust proxy')
 
@@ -291,9 +285,11 @@ export class Cluster {
     if (!config.disableAccessLog) {
       app.use(morgan('combined'))
     }
-    // eslint-disable-next-line @typescript-eslint/no-misused-promises
-    app.get('/download/:hash(\\w+)', async (req: Request, res: Response, next: NextFunction) => {
+    app.get('/download/:hash', async (req: DownloadRequest, res: Response, next: NextFunction) => {
       try {
+        if (!/^\w+$/.test(req.params.hash)) {
+          return next()
+        }
         const hash = req.params.hash.toLowerCase()
         const signValid = checkSign(hash, this.clusterSecret, req.query as NodeJS.Dict<string>)
         if (!signValid) {
@@ -328,7 +324,7 @@ export class Cluster {
       }
     })
     app.use('/measure', MeasureRouteFactory(config))
-    let server: Server
+    let server: ClusterServer
     if (https) {
       server = createSecureServer(
         {
@@ -337,7 +333,7 @@ export class Cluster {
           allowHTTP1: true,
         },
         app,
-      ) as unknown as Server
+      )
     } else {
       server = createServer(app)
     }
@@ -353,9 +349,9 @@ export class Cluster {
     const confFile = `${dir}/nginx/nginx.conf`
     const templateFile = 'nginx.conf'
     const confTemplate = await readFile(join(__dirname, '..', 'nginx', templateFile), 'utf8')
-    logger.debug('nginx conf', confFile)
+    logger.debug({confFile}, 'nginx conf')
 
-    await fse.copy(join(__dirname, '..', 'nginx'), dirname(confFile), {recursive: true, overwrite: true})
+    await fse.copy(join(__dirname, '..', 'nginx'), dirname(confFile), {overwrite: true})
     await fse.outputFile(
       confFile,
       template(confTemplate)({
@@ -517,10 +513,11 @@ export class Cluster {
       searchParams: {noopen: 1},
     })
 
-    await this.storage.writeFile(hashToFilename(hash), res.body, {
+    const body = Buffer.from(res.body)
+    await this.storage.writeFile(hashToFilename(hash), body, {
       path: `/download/${hash}`,
       hash,
-      size: res.body.length,
+      size: body.length,
       mtime: Date.now(),
     })
   }
@@ -618,7 +615,7 @@ export class Cluster {
   }
 
   private onConnectionError(event: string, err: Error): void {
-    logger.error(`${event}: cannot connect to server`, err)
+    logger.error({err}, `${event}: cannot connect to server`)
     if (this.server) {
       this.server.close(() => {
         this.exit(1)

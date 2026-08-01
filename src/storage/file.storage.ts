@@ -1,6 +1,6 @@
 import Bluebird from 'bluebird'
 import colors from 'colors/safe.js'
-import type {Request, Response} from 'express'
+import type {Response} from 'express'
 import fse from 'fs-extra'
 import {readdir, rm, stat, unlink, writeFile} from 'fs/promises'
 import {min} from 'lodash-es'
@@ -8,7 +8,7 @@ import {join, sep} from 'path'
 import {logger} from '../logger.js'
 import {IFileInfo, IGCCounter} from '../types.js'
 import {hashToFilename} from '../util.js'
-import type {IStorage} from './base.storage.js'
+import type {DownloadRequest, IStorage} from './base.storage.js'
 
 export class FileStorage implements IStorage {
   constructor(public readonly cacheDir: string) {}
@@ -77,7 +77,7 @@ export class FileStorage implements IStorage {
     return counter
   }
 
-  public async express(hashPath: string, req: Request, res: Response): Promise<{bytes: number; hits: number}> {
+  public async express(hashPath: string, req: DownloadRequest, res: Response): Promise<{bytes: number; hits: number}> {
     const name = req.query.name as string
     if (name) {
       res.attachment(name)

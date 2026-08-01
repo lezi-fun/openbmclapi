@@ -1,17 +1,16 @@
 import nodeCluster from 'cluster'
 import colors from 'colors/safe.js'
 import {HTTPError} from 'got'
-import {max} from 'lodash-es'
 import ms from 'ms'
 import {join} from 'path'
 import {fileURLToPath} from 'url'
 import {Cluster} from './cluster.js'
 import {config} from './config.js'
+import {refreshFileList} from './file-list.js'
 import {logger} from './logger.js'
 import {TokenManager} from './token.js'
 import {IFileList} from './types.js'
 
-// eslint-disable-next-line @typescript-eslint/naming-convention
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 
 export async function bootstrap(version: string): Promise<void> {
@@ -93,15 +92,12 @@ export async function bootstrap(version: string): Promise<void> {
   async function checkFile(lastFileList: IFileList): Promise<void> {
     logger.debug('refresh files')
     try {
-      const lastModified = max(lastFileList.files.map((file) => file.mtime))
-      const fileList = await cluster.getFileList(lastModified)
-      if (fileList.files.length === 0) {
+      const nextFileList = await refreshFileList(cluster, lastFileList)
+      if (nextFileList === lastFileList) {
         logger.debug('没有新文件')
         return
       }
-      const configuration = await cluster.getConfiguration()
-      await cluster.syncFiles(files, configuration.sync)
-      lastFileList = fileList
+      lastFileList = nextFileList
     } finally {
       checkFileInterval = setTimeout(() => {
         checkFile(lastFileList).catch((e) => {

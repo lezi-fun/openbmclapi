@@ -1,11 +1,11 @@
-ARG BASE_IMAGE=node:20-bullseye-slim
+ARG BASE_IMAGE=node:26.5.0-bookworm-slim
 FROM $BASE_IMAGE AS install
 
 WORKDIR /opt/openbmclapi
 RUN apt update && \
     apt install -y build-essential python3
 COPY package-lock.json package.json tsconfig.json ./
-RUN npm ci
+RUN npm install
 COPY src ./src
 RUN npm run build
 
@@ -15,7 +15,7 @@ WORKDIR /opt/openbmclapi
 RUN apt update && \
     apt install -y build-essential python3
 COPY package-lock.json package.json ./
-RUN npm ci --omit=dev
+RUN npm install --omit=dev
 
 FROM $BASE_IMAGE AS build
 
@@ -23,7 +23,7 @@ RUN apt-get update && \
     apt-get install -y nginx tini && \
     rm -rf /var/lib/apt/lists/*
 
-ARG USER=${USER:-root}
+ARG USER=root
 
 RUN chown -R $USER /var/log/nginx /var/lib/nginx
 

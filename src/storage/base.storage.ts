@@ -8,6 +8,8 @@ import {FileStorage} from './file.storage.js'
 import {MinioStorage} from './minio.storage.js'
 import {OssStorage} from './oss.storage.js'
 
+export type DownloadRequest = Request<{hash: string}>
+
 export interface IStorage {
   init?(): Promise<void>
 
@@ -21,7 +23,12 @@ export interface IStorage {
 
   gc(files: {path: string; hash: string; size: number}[]): Promise<IGCCounter>
 
-  express(hashPath: string, req: Request, res: Response, next?: NextFunction): Promise<{bytes: number; hits: number}>
+  express(
+    hashPath: string,
+    req: DownloadRequest,
+    res: Response,
+    next?: NextFunction,
+  ): Promise<{bytes: number; hits: number}>
 }
 
 export function getStorage(config: Config): IStorage {

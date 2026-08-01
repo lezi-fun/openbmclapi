@@ -1,14 +1,15 @@
 import colors from 'colors/safe.js'
-import {Request, Response} from 'express'
+import type {Response} from 'express'
 import Keyv from 'keyv'
 import {BucketItem, Client, S3Error} from 'minio'
 import ms from 'ms'
-import {basename, join} from 'path'
+import {posix} from 'path'
 import {z} from 'zod'
 import {logger} from '../logger.js'
 import {IFileInfo, IGCCounter} from '../types.js'
 import {getSize} from '../util.js'
-import {IStorage} from './base.storage.js'
+import type {DownloadRequest, IStorage} from './base.storage.js'
+import {minioObjectHash, minioObjectKey, minioObjectPrefix, minioRelativePath} from './minio-path.js'
 
 const storageConfigSchema = z.object({
   url: z.string(),
@@ -58,16 +59,24 @@ export class MinioStorage implements IStorage {
 
   public async check(): Promise<boolean> {
     try {
-      await this.internalClient.putObject(this.bucket, join(this.prefix, '.check'), Buffer.from(Date.now().toString()))
-      await this.client.putObject(this.bucket, join(this.prefix, '.check'), Buffer.from(Date.now().toString()))
+      await this.internalClient.putObject(
+        this.bucket,
+        minioObjectKey(this.prefix, '.check'),
+        Buffer.from(Date.now().toString()),
+      )
+      await this.client.putObject(
+        this.bucket,
+        minioObjectKey(this.prefix, '.check'),
+        Buffer.from(Date.now().toString()),
+      )
       return true
     } catch (e) {
       logger.error(e, '存储检查异常')
       return false
     } finally {
       try {
-        await this.internalClient.removeObject(this.bucket, join(this.prefix, '.check'))
-        await this.client.removeObject(this.bucket, join(this.prefix, '.check'))
+        await this.internalClient.removeObject(this.bucket, minioObjectKey(this.prefix, '.check'))
+        await this.client.removeObject(this.bucket, minioObjectKey(this.prefix, '.check'))
       } catch (e) {
         logger.warn(e, '删除临时文件失败')
       }
@@ -79,7 +88,7 @@ export class MinioStorage implements IStorage {
       if (await this.existsCache.has(path)) {
         return true
       }
-      await this.internalClient.statObject(this.bucket, join(this.prefix, path))
+      await this.internalClient.statObject(this.bucket, minioObjectKey(this.prefix, path))
       await this.existsCache.set(path, true)
       return true
     } catch (e) {
@@ -94,17 +103,17 @@ export class MinioStorage implements IStorage {
 
   public async express(
     hashPath: string,
-    req: Request,
+    req: DownloadRequest,
     res: Response,
   ): Promise<{
     bytes: number
     hits: number
   }> {
-    const path = join(this.prefix, hashPath)
+    const path = minioObjectKey(this.prefix, hashPath)
     let resHeaders: {'response-content-disposition': string} | undefined
-    const fileInfo = this.files.get(hashPath)
+    const fileInfo = this.files.get(req.params.hash)
     if (fileInfo) {
-      const name = basename(fileInfo.path)
+      const name = posix.basename(fileInfo.path)
       resHeaders = {
         'response-content-disposition': `attachment; filename="${encodeURIComponent(name)}"`,
       }
@@ -121,17 +130,20 @@ export class MinioStorage implements IStorage {
     for (const file of files) {
       fileSet.add(file.hash)
     }
-    const scanStream = this.internalClient.listObjectsV2(this.bucket, this.prefix)
+    const scanStream = this.internalClient.listObjectsV2(this.bucket, minioObjectPrefix(this.prefix))
     for await (const file of scanStream) {
       const item = file as BucketItem
       if (!item.name) continue
-      const path = item.name.replace(this.prefix, '')
-      if (!fileSet.has(path)) {
+      const path = minioRelativePath(this.prefix, item.name)
+      if (!path) continue
+      const hash = minioObjectHash(path)
+      if (!fileSet.has(hash)) {
         logger.info(colors.gray(`delete expire file: ${path}`))
         await this.internalClient.removeObject(this.bucket, item.name)
-        this.files.delete(path)
+        this.files.delete(hash)
+        await this.existsCache.delete(path)
         counter.count++
-        counter.size += file
+        counter.size += item.size
       }
     }
     return counter
@@ -146,14 +158,16 @@ export class MinioStorage implements IStorage {
       return [...remoteFileList.values()]
     }
 
-    const scanStream = this.internalClient.listObjectsV2(this.bucket, this.prefix, true)
+    const scanStream = this.internalClient.listObjectsV2(this.bucket, minioObjectPrefix(this.prefix), true)
     for await (const file of scanStream) {
       const item = file as BucketItem
       if (!item.name) continue
-      const hash = basename(item.name)
+      const path = minioRelativePath(this.prefix, item.name)
+      if (!path) continue
+      const hash = minioObjectHash(path)
       const existsFile = remoteFileList.get(hash)
       if (existsFile && existsFile.size === item.size) {
-        this.files.set(hash, {size: item.size, path: item.name.replace(this.prefix, '')})
+        this.files.set(hash, {size: item.size, path})
         remoteFileList.delete(hash)
       }
     }
@@ -161,7 +175,7 @@ export class MinioStorage implements IStorage {
   }
 
   public async writeFile(path: string, content: Buffer, fileInfo: IFileInfo): Promise<void> {
-    await this.internalClient.putObject(this.bucket, join(this.prefix, path), content)
+    await this.internalClient.putObject(this.bucket, minioObjectKey(this.prefix, path), content)
     this.files.set(fileInfo.hash, fileInfo)
   }
 }

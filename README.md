@@ -3,6 +3,11 @@ BMCLAPI是@bangbang93开发的BMCL的一部分，用于解决国内线路对Forg
 
 
 # OpenBMCLAPI
+
+> 本仓库是 OpenBMCLAPI 的现代化维护版：在保持 BMCLAPI 控制面、节点注册和下载协议
+> 兼容的前提下，升级到当前 Node.js 与现代依赖，提供 HTTP/2 支持，并强化缓存和存储
+> 正确性。
+
 这个项目的主要目的是辅助bmclapi分发文件
 对节点的要求降低了不少
 
@@ -81,7 +86,8 @@ docker compose up -d
 
 #### 环境
 
-- Node.js 18以上
+- Node.js 24 以上、低于 27
+- 推荐安装 Bun 1.3 以上，用于本地运行项目脚本
 - Windows/MacOS/Linux, x86/arm均可 (凡是nodejs支持的环境都可以)
 
 #### 设置环境
@@ -89,18 +95,36 @@ docker compose up -d
 1. 去 <https://nodejs.org/zh-cn/> 下载LTS版本的nodejs并安装
 2. Clone 并安装依赖
 
+推荐使用 Bun 运行项目脚本。依赖仍使用 npm 安装，以保持仓库唯一的
+`package-lock.json`；项目和生产环境仍以 Node.js 作为运行时。
+
 ```bash
 git clone https://github.com/bangbang93/openbmclapi
 cd openbmclapi
-## 安装依赖
-npm ci
-## 编译
+npm install
+bun run build
+bun run start
+```
+
+也可以只使用 npm：
+
+```bash
 npm run build
-## 运行
-node dist/index.js
+npm start
 ```
 
 3. 如果你看到了 `CLUSTER_ID is not set` 的报错, 说明一切正常, 该设置参数了
+
+#### 常用开发命令
+
+| 作用 | npm | Bun |
+|---|---|---|
+| 开发模式 | `npm run dev` | `bun run dev` |
+| 构建 | `npm run build` | `bun run build` |
+| 启动构建产物 | `npm start` | `bun run start` |
+| 测试（包含构建） | `npm test` | `bun run test` |
+| 代码检查 | `npm run lint` | `bun run lint` |
+| 完整检查 | `npm run check` | `bun run check` |
 
 ### 设置参数
 

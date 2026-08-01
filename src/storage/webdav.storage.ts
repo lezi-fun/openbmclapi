@@ -1,17 +1,17 @@
 import colors from 'colors/safe.js'
-import type {Request, Response} from 'express'
+import type {Response} from 'express'
 import Keyv from 'keyv'
 import ms from 'ms'
 import {Agent} from 'node:https'
 import pMap from 'p-map'
 import {join} from 'path'
-import {createClient, type FileStat, type WebDAVClient} from 'webdav'
+import {createClient, type WebDAVClient} from 'webdav'
 import {z} from 'zod'
 import {fromZodError} from 'zod-validation-error'
 import {logger} from '../logger.js'
 import {IFileInfo, IGCCounter} from '../types.js'
 import {getSize} from '../util.js'
-import type {IStorage} from './base.storage.js'
+import type {DownloadRequest, IStorage} from './base.storage.js'
 
 const storageConfigSchema = z.object({
   url: z.string(),
@@ -39,7 +39,7 @@ export class WebdavStorage implements IStorage {
       this.storageConfig = storageConfigSchema.parse(storageConfig)
     } catch (e) {
       if (e instanceof z.ZodError) {
-        throw new Error('webdav存储选项无效', {cause: fromZodError(e)})
+        throw new Error(`webdav存储选项无效: ${fromZodError(e).message}`, {cause: e})
       } else {
         throw new Error('webdav存储选项无效', {cause: e})
       }
@@ -111,9 +111,8 @@ export class WebdavStorage implements IStorage {
       const nextQueue = [] as string[]
       await pMap(
         queue,
-        // eslint-disable-next-line no-loop-func
         async (dir) => {
-          const entries = (await this.client.getDirectoryContents(dir)) as FileStat[]
+          const entries = await this.client.getDirectoryContents(dir)
           entries.sort((a, b) => a.basename.localeCompare(b.basename))
           logger.trace(`checking ${dir}, (${++cur}/${count})`)
           for (const entry of entries) {
@@ -148,7 +147,7 @@ export class WebdavStorage implements IStorage {
     do {
       const dir = queue.pop()
       if (!dir) break
-      const entries = (await this.client.getDirectoryContents(dir)) as FileStat[]
+      const entries = await this.client.getDirectoryContents(dir)
       entries.sort((a, b) => a.basename.localeCompare(b.basename))
       for (const entry of entries) {
         if (entry.type === 'directory') {
@@ -168,7 +167,7 @@ export class WebdavStorage implements IStorage {
   }
 
   // eslint-disable-next-line @typescript-eslint/require-await
-  public async express(hashPath: string, req: Request, res: Response): Promise<{bytes: number; hits: number}> {
+  public async express(hashPath: string, req: DownloadRequest, res: Response): Promise<{bytes: number; hits: number}> {
     if (this.emptyFiles.has(hashPath)) {
       res.end()
       return {bytes: 0, hits: 1}

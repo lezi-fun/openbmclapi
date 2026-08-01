@@ -1,4 +1,4 @@
-import type {Request, Response} from 'express'
+import type {Response} from 'express'
 import got from 'got'
 import Keyv from 'keyv'
 import {KeyvFile} from 'keyv-file'
@@ -7,6 +7,7 @@ import {join} from 'path'
 import {z} from 'zod'
 import {fromZodError} from 'zod-validation-error'
 import {getSize} from '../util.js'
+import type {DownloadRequest} from './base.storage.js'
 import {WebdavStorage} from './webdav.storage.js'
 
 const storageConfigSchema = WebdavStorage.configSchema.extend({
@@ -25,14 +26,14 @@ export class AlistWebdavStorage extends WebdavStorage {
       this.storageConfig = this.configSchema.parse(storageConfig)
     } catch (e) {
       if (e instanceof z.ZodError) {
-        throw new Error('alist存储选项无效', {cause: fromZodError(e)})
+        throw new Error(`alist存储选项无效: ${fromZodError(e).message}`, {cause: e})
       } else {
         throw new Error('alist存储选项无效', {cause: e})
       }
     }
     let ttl: number
     if (typeof this.storageConfig.cacheTtl === 'string') {
-      ttl = ms(this.storageConfig.cacheTtl)
+      ttl = ms(this.storageConfig.cacheTtl as ms.StringValue)
     } else {
       ttl = this.storageConfig.cacheTtl
     }
@@ -46,7 +47,7 @@ export class AlistWebdavStorage extends WebdavStorage {
     })
   }
 
-  public async express(hashPath: string, req: Request, res: Response): Promise<{bytes: number; hits: number}> {
+  public async express(hashPath: string, req: DownloadRequest, res: Response): Promise<{bytes: number; hits: number}> {
     if (this.emptyFiles.has(hashPath)) {
       res.end()
       return {bytes: 0, hits: 1}

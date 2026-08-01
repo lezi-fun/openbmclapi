@@ -52,6 +52,6 @@ export const OpenbmclapiAgentConfigurationSchema = z.object({
 
 export type OpenbmclapiAgentConfiguration = z.infer<typeof OpenbmclapiAgentConfigurationSchema>
 
-dotenv.config()
+dotenv.config({quiet: true})
 
 export const config = Config.getInstance()

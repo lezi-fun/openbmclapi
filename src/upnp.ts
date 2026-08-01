@@ -1,5 +1,5 @@
 import {second} from '@bangbang93/utils'
-import {createUpnpClient, UpnpClient} from '@xmcl/nat-api'
+import {createUpnpClient, type UpnpClient} from '@xmcl/nat-api/dist/index.js'
 import ms from 'ms'
 import {logger} from './logger.js'
 

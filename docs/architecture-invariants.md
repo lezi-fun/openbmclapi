@@ -1,0 +1,179 @@
+# OpenBMCLAPI 架构与重构不变量
+
+本文档是后续重构的兼容性基线。它描述必须保持的外部协议、系统正确性和当前策略，
+并明确哪些现有行为属于缺陷，不能被当作兼容目标。
+
+## 系统边界
+
+本仓库实现受中心主控管理的边缘缓存节点，不包含主控内部调度算法，也没有节点间协议。
+
+- Primary 进程只监管一个 Worker，并负责退避重启。
+- Worker 同时负责控制面连接、节点生命周期、文件同步、HTTP 数据面、存储适配、
+  可选 Nginx 和 UPnP。
+- 主控文件清单是缓存状态的事实源。
+- 文件以内容 hash 标识，逻辑存储键为 `<hash 前两位>/<完整 hash>`。
+
+```mermaid
+flowchart LR
+    C["BMCLAPI 主控与回源网络"]
+    U["用户 / 启动器"]
+
+    subgraph N["OpenBMCLAPI 节点"]
+        P["Primary<br/>Worker 监管"]
+        W["Worker<br/>bootstrap + Cluster"]
+        E["Express<br/>HTTP/1.1 与 HTTP/2"]
+        X["可选 Nginx<br/>TLS 与 sendfile"]
+        S[("File / AList / MinIO / OSS")]
+
+        P --> W
+        W --> E
+        W --> X
+        X -->|"Unix socket"| E
+        E --> S
+        X -.->|"本地缓存直出"| S
+    end
+
+    W <-->|"HTTPS REST"| C
+    W <-->|"Socket.IO WebSocket"| C
+    U -->|"签名下载或测速"| E
+    U -->|"启用 Nginx 时"| X
+    S -->|"字节流或 302"| U
+```
+
+## 硬兼容契约
+
+这些契约不能在单边节点升级中改变。任何变更都需要主控能力协商或双协议过渡。
+
+### 控制面认证
+
+- `GET openbmclapi-agent/challenge?clusterId=...`
+- challenge 使用集群密钥执行 HMAC-SHA256，并编码为十六进制。
+- `POST openbmclapi-agent/token` 的初次认证载荷为
+  `{clusterId, challenge, signature}`。
+- token 刷新载荷为 `{clusterId, token}`，响应继续提供 `{token, ttl}`。
+- User-Agent 保持 `openbmclapi-cluster/<version>`。
+
+### 控制面 REST
+
+- `GET openbmclapi/files` 接受可选 `lastModified`；204 表示没有增量。
+- 文件清单继续使用 Zstd 压缩的 Avro 数组，字段为 `path/hash/size/mtime`。
+- `GET openbmclapi/configuration` 至少提供 `sync.source` 和
+  `sync.concurrency`。
+- `GET openbmclapi/download/:hash?noopen=1` 用于按需回源。
+- `POST openbmclapi/report` 保持 `{urls, error}` 载荷。
+
+### Socket.IO
+
+- transport 保持 WebSocket，连接认证载荷保持 `{token}`。
+- `request-cert` 返回 `[error, {cert, key}]`。
+- `port-check` 与 `enable` 的载荷保持
+  `{host, port, version, byoc, noFastEnable, flavor}`。
+- `enable`、`disable` 的成功 ACK 必须严格为 `true`。
+- `keep-alive` 载荷保持 `{time, hits, bytes}`。
+- 服务端事件 `message`、`exception`、`warden-error` 保持可处理。
+
+### HTTP 数据面
+
+- `/download/:hash` 使用查询参数 `s` 和 `e` 校验签名及有效期。
+- 无效签名返回 403；不存在的回源对象保持 404 语义。
+- 成功响应保留 `x-bmclapi-hash`，并继续支持 Range 和可选附件名。
+- `/measure/:size` 使用相同签名机制，范围为 0 到 200 MiB，实际响应长度必须
+  等于 `Content-Length`。
+- Nginx 的内部 `/auth` 子请求继续使用 `X-Original-URI`，成功返回 204。
+
+### 配置面
+
+已公开环境变量的名称、必填性、默认值和语义必须保持兼容，包括集群凭据、监听及
+公开端口、BYOC、证书、Nginx、UPnP、主控地址和存储配置。
+
+## 正确性不变量
+
+### 文件完整性
+
+1. 相同 hash 在所有存储后端必须表示相同字节。
+2. 32 字符摘要使用 MD5 校验，其他摘要使用 SHA-1 校验。
+3. 文件只有在大小和摘要均匹配后才能对外可见。
+4. 零字节文件是合法对象。
+5. 失败或进程终止不能留下会被 `exists()` 视为成功的部分文件。
+
+### 缓存一致性
+
+1. 完整主控清单是唯一权威保留集合。
+2. 增量清单只能更新当前状态，不能替代完整状态或直接驱动 GC。
+3. 成功写入后必须立即可读；删除后所有正向缓存和内存索引必须失效。
+4. 同一 hash 同时最多有一个回源下载；并发请求共享成功或失败结果。
+5. GC 不得删除权威清单内、正在下载或正在服务的对象。
+6. GC 必须幂等，回收计数必须反映实际删除的对象和字节。
+
+### 节点注册
+
+1. `enable` 只能发生在监听成功、端口巡检成功、存储可写且初始同步成功之后。
+2. 任意时刻最多有一个注册或重注册操作。
+3. 断线后节点立即进入未启用状态。
+4. 只有先前期望在线的节点才允许自动重新注册。
+5. Worker 只能在 `enable` ACK 成功后向 Primary 发送 `ready`。
+6. 优雅停止时，先停止心跳和接收新工作，再完成 `disable`，最后关闭连接和服务。
+
+### 流量与带宽信号
+
+1. 心跳继续上报 `{time, hits, bytes}`。
+2. 只有 ACK 成功后才能扣除对应计数快照。
+3. ACK 等待期间产生的新计数必须保留，不能丢失或重复上报。
+4. File、AList、MinIO、OSS 对同一下载和 Range 请求必须产生等价计量语义。
+5. 本仓库没有全局带宽调度器；必须保持的是测速结果、心跳计量和同步并发信号。
+
+## 行为保持阶段的策略快照
+
+- 同步并发使用主控下发的 `sync.concurrency`。
+- Got 的文件下载内建重试关闭，由 `pRetry` 提供最多 10 次额外重试。
+- 摘要校验失败也进入文件重试。
+- 一轮同步会继续处理其他文件，但任一文件最终失败会使整轮同步失败。
+- 心跳周期为 1 分钟，单次等待 10 秒，连续 3 次失败后软重连。
+- 软重连总预算为 10 分钟，失败后退出 Worker。
+- Worker 退避因子为 2、抖动为正负 20%、名义上限为 60 秒；
+  收到 `ready` 后重置。
+- Primary 等待 Worker 退出的上限为 30 秒。
+
+这些数值是无行为重构阶段的冻结策略，不是永久协议。后续调整必须有故障注入测试和
+独立发布说明。
+
+## 已知违反不变量的行为
+
+以下行为必须修复，不能被回归测试固化为正确结果。
+
+1. 按需下载写入存储前没有执行摘要校验。
+2. 各存储后端对 Range、附件名和 `bytes` 的定义不一致。
+3. token 刷新失败后不会安排下一次刷新。
+4. `isEnabled` 和 `wantEnable` 无法阻止并发注册或表达排空等中间状态。
+
+## 本阶段已修复
+
+1. 增量刷新现在同步主控返回的增量清单，不再重复同步启动时的完整清单。
+2. MinIO 对象键统一使用 POSIX 分隔符；GC 按相对路径 basename 与 hash 比较，
+   并正确更新删除字节数、内存索引和存在性缓存。
+
+## 迁移顺序
+
+1. 建立假主控、Socket ACK、清单编解码、存储一致性和可控时钟测试。
+2. 已完成增量同步和 MinIO GC 的代码修复及纯函数回归测试；真实 MinIO 环境仍需
+   dry-run 验证后再启用删除。
+3. 从 `Cluster` 提取控制面客户端和显式节点状态机，不改变协议。
+4. 引入支持原子写入、统一 Range 和统一计量的 Storage V2。
+5. 完善 token、ACK 超时、取消、背压和子进程恢复。
+6. 使用影子比较、单节点 canary、隔离删除和能力协商渐进发布。
+
+## 运行时与依赖升级规则
+
+- Node.js 同时覆盖当前 LTS 和最新 Current 版本。
+- CI、Docker 镜像、`engines` 和 TypeScript 基础配置必须表达相同支持范围。
+- `package-lock.json` 是唯一提交的依赖锁文件，CI、发布和 Docker 继续使用
+  `npm install`。
+- Bun 只推荐用于本地脚本调度；依赖安装继续使用 `npm install`，避免从 npm 锁文件
+  自动迁移出第二份 `bun.lock`，服务进程仍由 Node.js 运行。
+- `@mongodb-js/zstd` 的原生安装脚本必须保持在 npm `allowScripts` 和 Bun
+  `trustedDependencies` 白名单中；升级该依赖时要同步审查并更新版本钉扎。
+- 生产依赖升级到最新稳定版本。
+- 工具链使用能共同满足 peer dependency 的最新组合；不能为了版本号使用
+  `--force` 或 `--legacy-peer-deps`。
+- 每组 major 升级必须通过全新 `npm install`、lint、build 和协议回归测试。
+- 依赖升级阶段不改变上述业务协议及正确性语义。

@@ -1,6 +1,6 @@
 import OSS from 'ali-oss'
 import colors from 'colors/safe.js'
-import {Request, Response} from 'express'
+import type {Response} from 'express'
 import Keyv from 'keyv'
 import ms from 'ms'
 import {pipeline} from 'node:stream/promises'
@@ -9,7 +9,7 @@ import {z} from 'zod'
 import {logger} from '../logger.js'
 import {IFileInfo, IGCCounter} from '../types.js'
 import {getSize} from '../util.js'
-import {IStorage} from './base.storage.js'
+import type {DownloadRequest, IStorage} from './base.storage.js'
 
 const storageConfigSchema = z.object({
   accessKeyId: z.string(),
@@ -77,7 +77,7 @@ export class OssStorage implements IStorage {
 
   public async express(
     hashPath: string,
-    req: Request,
+    req: DownloadRequest,
     res: Response,
   ): Promise<{
     bytes: number
