@@ -87,33 +87,30 @@ docker compose up -d
 #### 环境
 
 - Node.js 24 以上、低于 27
-- 推荐安装 Bun 1.3 以上，用于本地运行项目脚本
+- Bun 1.3 以上
 - Windows/MacOS/Linux, x86/arm均可 (凡是nodejs支持的环境都可以)
 
 #### 设置环境
 
 1. 去 <https://nodejs.org/zh-cn/> 下载LTS版本的nodejs并安装
-2. Clone 并安装依赖
+2. 安装 Bun
 
-推荐使用 Bun 运行项目脚本。依赖仍使用 npm 安装，以保持仓库唯一的
-`package-lock.json`；项目和生产环境仍以 Node.js 作为运行时。
+我们推荐使用 **Bun**。Bun 是一个面向现代 JavaScript 和 TypeScript 应用的一体化
+工具链，内置运行时、包管理器、脚本运行器、测试运行器和打包器。
+
+- 官方下载与安装地址：<https://bun.com/docs/installation>
+
+3. Clone、安装依赖并启动
 
 ```bash
-git clone https://github.com/bangbang93/openbmclapi
+git clone https://github.com/lezi-fun/openbmclapi
 cd openbmclapi
-npm install
+bun install
 bun run build
 bun run start
 ```
 
-也可以只使用 npm：
-
-```bash
-npm run build
-npm start
-```
-
-3. 如果你看到了 `CLUSTER_ID is not set` 的报错, 说明一切正常, 该设置参数了
+4. 如果你看到了 `CLUSTER_ID is not set` 的报错, 说明一切正常, 该设置参数了
 
 #### 常用开发命令
 

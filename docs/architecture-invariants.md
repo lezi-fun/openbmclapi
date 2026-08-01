@@ -168,8 +168,7 @@ flowchart LR
 - CI、Docker 镜像、`engines` 和 TypeScript 基础配置必须表达相同支持范围。
 - `package-lock.json` 是唯一提交的依赖锁文件，CI、发布和 Docker 继续使用
   `npm install`。
-- Bun 只推荐用于本地脚本调度；依赖安装继续使用 `npm install`，避免从 npm 锁文件
-  自动迁移出第二份 `bun.lock`，服务进程仍由 Node.js 运行。
+- Bun 是本地开发推荐的依赖安装器和脚本调度器；服务进程仍由 Node.js 运行。
 - `@mongodb-js/zstd` 的原生安装脚本必须保持在 npm `allowScripts` 和 Bun
   `trustedDependencies` 白名单中；升级该依赖时要同步审查并更新版本钉扎。
 - 生产依赖升级到最新稳定版本。
