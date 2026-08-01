@@ -1,17 +1,14 @@
-import nodeCluster from 'cluster'
+import nodeCluster from 'node:cluster'
+import {join} from 'node:path'
 import colors from 'colors/safe.js'
 import {HTTPError} from 'got'
 import ms from 'ms'
-import {join} from 'path'
-import {fileURLToPath} from 'url'
 import {Cluster} from './cluster.js'
 import {config} from './config.js'
 import {refreshFileList} from './file-list.js'
 import {logger} from './logger.js'
 import {TokenManager} from './token.js'
 import {IFileList} from './types.js'
-
-const __dirname = fileURLToPath(new URL('.', import.meta.url))
 
 export async function bootstrap(version: string): Promise<void> {
   logger.info(colors.green(`booting openbmclapi ${version}`))
@@ -37,7 +34,7 @@ export async function bootstrap(version: string): Promise<void> {
 
   if (config.enableNginx) {
     if (typeof cluster.port === 'number') {
-      await cluster.setupNginx(join(__dirname, '..'), cluster.port, proto)
+      await cluster.setupNginx(join(import.meta.dirname, '..'), cluster.port, proto)
     } else {
       throw new Error('cluster.port is not a number')
     }

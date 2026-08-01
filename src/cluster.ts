@@ -1,32 +1,29 @@
 import {decompress} from '@mongodb-js/zstd'
-import {ChildProcess, spawn} from 'child_process'
+import {spawn, type ChildProcess} from 'node:child_process'
+import {readFileSync} from 'node:fs'
+import {mkdtemp, open, readFile, rm} from 'node:fs/promises'
+import {createServer, type Server} from 'node:http'
+import {constants, createSecureServer, type Http2SecureServer} from 'node:http2'
+import {Agent as HttpsAgent} from 'node:https'
+import {tmpdir, userInfo} from 'node:os'
+import {dirname, join} from 'node:path'
+import {setTimeout as delay} from 'node:timers/promises'
 import {MultiBar} from 'cli-progress'
 import colors from 'colors/safe.js'
-import delay from 'delay'
 import express, {type NextFunction, type Response} from 'express'
-import {readFileSync} from 'fs'
 import fse from 'fs-extra'
-import {mkdtemp, open, readFile, rm} from 'fs/promises'
 import got, {type Got, HTTPError, RequestError} from 'got'
-import {createServer, Server} from 'http'
-import {createSecureServer} from 'http2'
 import http2Express from 'http2-express'
-import {Agent as HttpsAgent} from 'https'
 import ipaddr from 'ipaddr.js'
 import stringifySafe from 'json-stringify-safe'
 import {template, toString} from 'lodash-es'
 import morgan from 'morgan'
 import ms from 'ms'
-import {constants} from 'node:http2'
-import {userInfo} from 'node:os'
-import {tmpdir} from 'os'
 import pMap from 'p-map'
 import pRetry from 'p-retry'
-import {dirname, join} from 'path'
 import prettyBytes from 'pretty-bytes'
 import {connect, Socket} from 'socket.io-client'
 import {Tail} from 'tail'
-import {fileURLToPath} from 'url'
 import {config, type OpenbmclapiAgentConfiguration, OpenbmclapiAgentConfigurationSchema} from './config.js'
 import {FileListSchema} from './constants.js'
 import {validateFile} from './file.js'
@@ -41,7 +38,7 @@ import type {IFileList} from './types.js'
 import {setupUpnp} from './upnp.js'
 import {checkSign, hashToFilename} from './util.js'
 
-type ClusterServer = Server | import('http2').Http2SecureServer
+type ClusterServer = Server | Http2SecureServer
 
 interface ICounters {
   hits: number
@@ -50,7 +47,7 @@ interface ICounters {
 
 const whiteListDomain = ['localhost', 'bangbang93.com']
 
-const __dirname = dirname(fileURLToPath(import.meta.url))
+const rootDir = join(import.meta.dirname, '..')
 
 export class Cluster {
   public readonly counters: ICounters = {hits: 0, bytes: 0}
@@ -348,10 +345,10 @@ export class Cluster {
     const dir = await mkdtemp(join(tmpdir(), 'openbmclapi'))
     const confFile = `${dir}/nginx/nginx.conf`
     const templateFile = 'nginx.conf'
-    const confTemplate = await readFile(join(__dirname, '..', 'nginx', templateFile), 'utf8')
+    const confTemplate = await readFile(join(rootDir, 'nginx', templateFile), 'utf8')
     logger.debug({confFile}, 'nginx conf')
 
-    await fse.copy(join(__dirname, '..', 'nginx'), dirname(confFile), {overwrite: true})
+    await fse.copy(join(rootDir, 'nginx'), dirname(confFile), {overwrite: true})
     await fse.outputFile(
       confFile,
       template(confTemplate)({
@@ -364,7 +361,7 @@ export class Cluster {
       }),
     )
 
-    const logFile = join(__dirname, '..', 'access.log')
+    const logFile = join(rootDir, 'access.log')
     const logFd = await open(logFile, 'a')
     await fse.ftruncate(logFd.fd)
 

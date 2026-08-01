@@ -1,5 +1,5 @@
 import type {NextFunction, Request, Response} from 'express'
-import {join} from 'path'
+import {join} from 'node:path'
 import type {Config} from '../config.js'
 import {logger} from '../logger.js'
 import {IFileInfo, IGCCounter} from '../types.js'

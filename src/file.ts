@@ -1,4 +1,4 @@
-import {createHash, Hash} from 'crypto'
+import {createHash, Hash} from 'node:crypto'
 
 export function validateFile(buffer: Buffer, checkSum: string): boolean {
   let hash: Hash

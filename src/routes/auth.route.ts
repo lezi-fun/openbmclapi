@@ -1,5 +1,5 @@
 import type {NextFunction, Request, Response} from 'express'
-import {basename} from 'path'
+import {basename} from 'node:path'
 import {Config} from '../config.js'
 import {checkSign} from '../util.js'
 

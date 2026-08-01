@@ -1,13 +1,12 @@
-import cluster from 'cluster'
+import cluster from 'node:cluster'
+import {readFileSync} from 'node:fs'
 import {config} from 'dotenv'
-import {readFileSync} from 'fs'
 import {random} from 'lodash-es'
 import ms from 'ms'
-import {fileURLToPath} from 'url'
 import {bootstrap} from './bootstrap.js'
 import {logger} from './logger.js'
 
-const packageJson = JSON.parse(readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8')) as {
+const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
   version: string
 }
 
