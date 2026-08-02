@@ -1,9 +1,9 @@
 import nodeCluster from 'node:cluster'
 import {join} from 'node:path'
-import colors from 'colors/safe.js'
 import {HTTPError} from 'got'
 import ms from 'ms'
 import {Cluster} from './cluster.js'
+import {greenText, rainbowText} from './console-style.js'
 import {config} from './config.js'
 import {refreshFileList} from './file-list.js'
 import {logger} from './logger.js'
@@ -11,7 +11,7 @@ import {TokenManager} from './token.js'
 import {IFileList} from './types.js'
 
 export async function bootstrap(version: string): Promise<void> {
-  logger.info(colors.green(`booting openbmclapi ${version}`))
+  logger.info(greenText(`booting openbmclapi ${version}`))
   const tokenManager = new TokenManager(config.clusterId, config.clusterSecret, version)
   await tokenManager.getToken()
   const cluster = new Cluster(config.clusterSecret, version, tokenManager)
@@ -67,7 +67,7 @@ export async function bootstrap(version: string): Promise<void> {
     logger.info('请求上线')
     await cluster.enable()
 
-    logger.info(colors.rainbow(`done, serving ${files.files.length} files`))
+    logger.info(rainbowText(`done, serving ${files.files.length} files`))
     if (nodeCluster.isWorker && typeof process.send === 'function') {
       process.send('ready')
     }

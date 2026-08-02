@@ -1,10 +1,10 @@
-import colors from 'colors/safe.js'
 import type {Response} from 'express'
 import Keyv from 'keyv'
 import {BucketItem, Client, S3Error} from 'minio'
 import ms from 'ms'
 import {posix} from 'node:path'
 import {z} from 'zod'
+import {grayText} from '../console-style.js'
 import {logger} from '../logger.js'
 import {IFileInfo, IGCCounter} from '../types.js'
 import {getSize} from '../util.js'
@@ -138,7 +138,7 @@ export class MinioStorage implements IStorage {
       if (!path) continue
       const hash = minioObjectHash(path)
       if (!fileSet.has(hash)) {
-        logger.info(colors.gray(`delete expire file: ${path}`))
+        logger.info(grayText(`delete expire file: ${path}`))
         await this.internalClient.removeObject(this.bucket, item.name)
         this.files.delete(hash)
         await this.existsCache.delete(path)

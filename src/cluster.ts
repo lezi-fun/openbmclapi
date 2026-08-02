@@ -9,7 +9,6 @@ import {tmpdir, userInfo} from 'node:os'
 import {dirname, join} from 'node:path'
 import {setTimeout as delay} from 'node:timers/promises'
 import {MultiBar} from 'cli-progress'
-import colors from 'colors/safe.js'
 import express, {type NextFunction, type Response} from 'express'
 import got, {type Got, HTTPError, RequestError} from 'got'
 import http2Express from 'http2-express'
@@ -24,6 +23,7 @@ import prettyBytes from 'pretty-bytes'
 import {connect, Socket} from 'socket.io-client'
 import {Tail} from 'tail'
 import {config, type OpenbmclapiAgentConfiguration, OpenbmclapiAgentConfigurationSchema} from './config.js'
+import {rainbowText} from './console-style.js'
 import {FileListSchema} from './constants.js'
 import {validateFile} from './file.js'
 import {pathExists, writeFileWithParents} from './fs.js'
@@ -608,7 +608,7 @@ export class Cluster {
       throw new Error('节点注册失败')
     }
 
-    logger.info(colors.rainbow('start doing my job'))
+    logger.info(rainbowText('start doing my job'))
     this.keepalive.start(this.socket)
   }
 

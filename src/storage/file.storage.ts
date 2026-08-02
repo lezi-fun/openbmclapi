@@ -1,9 +1,9 @@
-import colors from 'colors/safe.js'
 import type {Response} from 'express'
 import {mkdir, readdir, rm, stat, unlink, writeFile} from 'node:fs/promises'
 import {join, sep} from 'node:path'
 import {min} from 'lodash-es'
 import pMap from 'p-map'
+import {grayText} from '../console-style.js'
 import {pathExists, writeFileWithParents} from '../fs.js'
 import {logger} from '../logger.js'
 import {IFileInfo, IGCCounter} from '../types.js'
@@ -68,7 +68,7 @@ export class FileStorage implements IStorage {
         }
         const cacheDirWithSep = this.cacheDir + sep
         if (!fileSet.has(p.replace(cacheDirWithSep, ''))) {
-          logger.info(colors.gray(`delete expire file: ${p}`))
+          logger.info(grayText(`delete expire file: ${p}`))
           await unlink(p)
           counter.count++
           counter.size += s.size

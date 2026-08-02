@@ -1,4 +1,3 @@
-import colors from 'colors/safe.js'
 import type {Response} from 'express'
 import Keyv from 'keyv'
 import ms from 'ms'
@@ -8,6 +7,7 @@ import {join} from 'node:path'
 import {createClient, type WebDAVClient} from 'webdav'
 import {z} from 'zod'
 import {fromZodError} from 'zod-validation-error'
+import {grayText} from '../console-style.js'
 import {logger} from '../logger.js'
 import {IFileInfo, IGCCounter} from '../types.js'
 import {getSize} from '../util.js'
@@ -155,7 +155,7 @@ export class WebdavStorage implements IStorage {
           continue
         }
         if (!fileSet.has(entry.basename)) {
-          logger.info(colors.gray(`delete expire file: ${entry.filename}`))
+          logger.info(grayText(`delete expire file: ${entry.filename}`))
           await this.client.deleteFile(entry.filename)
           this.files.delete(entry.basename)
           counter.count++
