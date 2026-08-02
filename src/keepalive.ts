@@ -1,11 +1,9 @@
-import Bluebird from 'bluebird'
-import {clone} from 'lodash-es'
-import ms from 'ms'
 import {clearTimeout} from 'node:timers'
+import ms from 'ms'
 import pTimeout from 'p-timeout'
 import prettyBytes from 'pretty-bytes'
-import {Socket} from 'socket.io-client'
-import {Cluster} from './cluster.js'
+import type {Socket} from 'socket.io-client'
+import type {Cluster} from './cluster.js'
 import {logger} from './logger.js'
 
 export class Keepalive {
@@ -68,7 +66,7 @@ export class Keepalive {
       throw new Error('未连接到服务器')
     }
 
-    const counters = clone(this.cluster.counters)
+    const counters = {...this.cluster.counters}
     const [err, date] = (await this.socket.emitWithAck('keep-alive', {
       time: new Date(),
       ...counters,
@@ -83,15 +81,18 @@ export class Keepalive {
   }
 
   private async restart(): Promise<void> {
-    await Bluebird.try(async () => {
-      await this.cluster.disable()
-      this.cluster.connect()
-      await this.cluster.enable()
-    })
-      .timeout(ms('10m'), 'restart timeout')
-      .catch((e) => {
-        logger.error(e, 'restart failed')
-        this.cluster.exit(1)
-      })
+    try {
+      await pTimeout(
+        (async () => {
+          await this.cluster.disable()
+          this.cluster.connect()
+          await this.cluster.enable()
+        })(),
+        {milliseconds: ms('10m'), message: 'restart timeout'},
+      )
+    } catch (e) {
+      logger.error(e, 'restart failed')
+      this.cluster.exit(1)
+    }
   }
 }

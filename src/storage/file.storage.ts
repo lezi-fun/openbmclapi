@@ -1,9 +1,9 @@
-import Bluebird from 'bluebird'
 import colors from 'colors/safe.js'
 import type {Response} from 'express'
 import {mkdir, readdir, rm, stat, unlink, writeFile} from 'node:fs/promises'
 import {join, sep} from 'node:path'
 import {min} from 'lodash-es'
+import pMap from 'p-map'
 import {pathExists, writeFileWithParents} from '../fs.js'
 import {logger} from '../logger.js'
 import {IFileInfo, IGCCounter} from '../types.js'
@@ -35,16 +35,17 @@ export class FileStorage implements IStorage {
   }
 
   public async getMissingFiles(files: IFileInfo[]): Promise<IFileInfo[]> {
-    return await Bluebird.filter(
+    const missingFiles = await pMap(
       files,
       async (file) => {
         const st = await stat(join(this.cacheDir, hashToFilename(file.hash))).catch(() => null)
-        return st?.size !== file.size
+        return st?.size !== file.size ? file : undefined
       },
       {
         concurrency: 1e3,
       },
     )
+    return missingFiles.filter((file) => file !== undefined)
   }
 
   public async gc(files: {path: string; hash: string; size: number}[]): Promise<IGCCounter> {
