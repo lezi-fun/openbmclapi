@@ -34,7 +34,8 @@ import {logger} from './logger.js'
 import {beforeError} from './modules/got-hooks.js'
 import {AuthRouteFactory} from './routes/auth.route.js'
 import MeasureRouteFactory from './routes/measure.route.js'
-import {type DownloadRequest, getStorage, type IStorage} from './storage/base.storage.js'
+import {getStorage, type IStorage} from './storage/base.storage.js'
+import {normalizeAttachmentName, type StorageDownloadRequest} from './storage/download-response.js'
 import type {TokenManager} from './token.js'
 import type {IFileList} from './types.js'
 import {setupUpnp} from './upnp.js'
@@ -299,7 +300,7 @@ export class Cluster {
     if (!config.disableAccessLog) {
       app.use(morgan('combined'))
     }
-    app.get('/download/:hash', async (req: DownloadRequest, res: Response, next: NextFunction) => {
+    app.get('/download/:hash', async (req, res: Response, next: NextFunction) => {
       try {
         if (!/^\w+$/.test(req.params.hash)) {
           return next()
@@ -325,7 +326,14 @@ export class Cluster {
           }
         }
         res.set('x-bmclapi-hash', hash)
-        const {bytes, hits} = await this.storage.express(hashPath, req, res, next)
+        const downloadRequest: StorageDownloadRequest = {
+          hash,
+          hashPath,
+          method: req.method,
+          range: req.headers.range,
+          attachmentName: normalizeAttachmentName(req.query.name),
+        }
+        const {bytes, hits} = await this.storage.serve(downloadRequest, res)
         this.counters.bytes += bytes
         this.counters.hits += hits
       } catch (err) {

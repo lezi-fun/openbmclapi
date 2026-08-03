@@ -1,4 +1,4 @@
-import type {NextFunction, Request, Response} from 'express'
+import type {Response} from 'express'
 import {join} from 'node:path'
 import type {Config} from '../config.js'
 import {logger} from '../logger.js'
@@ -7,8 +7,7 @@ import {AlistWebdavStorage} from './alist-webdav.storage.js'
 import {FileStorage} from './file.storage.js'
 import {MinioStorage} from './minio.storage.js'
 import {OssStorage} from './oss.storage.js'
-
-export type DownloadRequest = Request<{hash: string}>
+import type {StorageDownloadRequest, StorageDownloadResult} from './download-response.js'
 
 export interface IStorage {
   init?(): Promise<void>
@@ -23,12 +22,7 @@ export interface IStorage {
 
   gc(files: {path: string; hash: string; size: number}[]): Promise<IGCCounter>
 
-  express(
-    hashPath: string,
-    req: DownloadRequest,
-    res: Response,
-    next?: NextFunction,
-  ): Promise<{bytes: number; hits: number}>
+  serve(request: StorageDownloadRequest, res: Response): Promise<StorageDownloadResult>
 }
 
 export function getStorage(config: Config): IStorage {

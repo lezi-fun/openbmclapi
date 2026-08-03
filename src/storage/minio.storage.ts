@@ -2,13 +2,17 @@ import type {Response} from 'express'
 import Keyv from 'keyv'
 import {BucketItem, Client, S3Error} from 'minio'
 import ms from 'ms'
-import {posix} from 'node:path'
 import {z} from 'zod'
 import {grayText} from '../console-style.js'
 import {logger} from '../logger.js'
 import {IFileInfo, IGCCounter} from '../types.js'
-import {getSize} from '../util.js'
-import type {DownloadRequest, IStorage} from './base.storage.js'
+import type {IStorage} from './base.storage.js'
+import {
+  attachmentHeader,
+  type StorageDownloadRequest,
+  type StorageDownloadResult,
+  successfulDownload,
+} from './download-response.js'
 import {minioObjectHash, minioObjectKey, minioObjectPrefix, minioRelativePath} from './minio-path.js'
 
 const storageConfigSchema = z.object({
@@ -101,27 +105,17 @@ export class MinioStorage implements IStorage {
     }
   }
 
-  public async express(
-    hashPath: string,
-    req: DownloadRequest,
-    res: Response,
-  ): Promise<{
-    bytes: number
-    hits: number
-  }> {
-    const path = minioObjectKey(this.prefix, hashPath)
+  public async serve(request: StorageDownloadRequest, res: Response): Promise<StorageDownloadResult> {
+    const path = minioObjectKey(this.prefix, request.hashPath)
     let resHeaders: {'response-content-disposition': string} | undefined
-    const fileInfo = this.files.get(req.params.hash)
-    if (fileInfo) {
-      const name = posix.basename(fileInfo.path)
+    if (request.attachmentName) {
       resHeaders = {
-        'response-content-disposition': `attachment; filename="${encodeURIComponent(name)}"`,
+        'response-content-disposition': attachmentHeader(request.attachmentName),
       }
     }
     const url = await this.client.presignedGetObject(this.bucket, path, 60, resHeaders)
     res.redirect(url)
-    const size = getSize(this.files.get(req.params.hash)?.size ?? 0, req.headers.range)
-    return {bytes: size, hits: 1}
+    return successfulDownload(this.files.get(request.hash)?.size ?? 0, request)
   }
 
   public async gc(files: {path: string; hash: string; size: number}[]): Promise<IGCCounter> {

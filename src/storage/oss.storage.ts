@@ -8,8 +8,15 @@ import {z} from 'zod'
 import {grayText} from '../console-style.js'
 import {logger} from '../logger.js'
 import {IFileInfo, IGCCounter} from '../types.js'
-import {getSize} from '../util.js'
-import type {DownloadRequest, IStorage} from './base.storage.js'
+import type {IStorage} from './base.storage.js'
+import {
+  applyAttachmentHeader,
+  attachmentHeader,
+  copyDownloadHeaders,
+  type StorageDownloadRequest,
+  type StorageDownloadResult,
+  successfulDownload,
+} from './download-response.js'
 
 const storageConfigSchema = z.object({
   accessKeyId: z.string(),
@@ -75,25 +82,24 @@ export class OssStorage implements IStorage {
     }
   }
 
-  public async express(
-    hashPath: string,
-    req: DownloadRequest,
-    res: Response,
-  ): Promise<{
-    bytes: number
-    hits: number
-  }> {
-    const path = join(this.prefix, hashPath)
+  public async serve(request: StorageDownloadRequest, res: Response): Promise<StorageDownloadResult> {
+    const path = join(this.prefix, request.hashPath)
     let resHeaders: OSS.ResponseHeaderType | undefined
-    const fileInfo = this.files.get(hashPath)
-    if (fileInfo) {
-      const name = basename(fileInfo.path)
+    if (request.attachmentName) {
       resHeaders = {
-        'content-disposition': `attachment; filename="${encodeURIComponent(name)}"`,
+        'content-disposition': attachmentHeader(request.attachmentName),
       }
     }
     if (this.config.proxy) {
-      const stream = await this.client.getStream(path)
+      const stream = await this.client.getStream(path, {
+        headers: request.range ? {Range: request.range} : undefined,
+      })
+      if (!stream.stream) {
+        throw new Error('OSS未返回文件流')
+      }
+      res.status(stream.res.status)
+      copyDownloadHeaders(stream.res.headers as Record<string, string | string[] | undefined>, res)
+      applyAttachmentHeader(res, request)
       await pipeline(stream.stream, res)
     } else {
       const url = this.client.signatureUrl(path, {
@@ -102,8 +108,7 @@ export class OssStorage implements IStorage {
       })
       res.redirect(url)
     }
-    const size = getSize(this.files.get(req.params.hash)?.size ?? 0, req.headers.range)
-    return await Promise.resolve({bytes: size, hits: 1})
+    return successfulDownload(this.files.get(request.hash)?.size ?? 0, request)
   }
 
   public async gc(files: {path: string; hash: string; size: number}[]): Promise<IGCCounter> {

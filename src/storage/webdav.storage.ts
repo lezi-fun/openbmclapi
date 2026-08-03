@@ -10,8 +10,13 @@ import {fromZodError} from 'zod-validation-error'
 import {grayText} from '../console-style.js'
 import {logger} from '../logger.js'
 import {IFileInfo, IGCCounter} from '../types.js'
-import {getSize} from '../util.js'
-import type {DownloadRequest, IStorage} from './base.storage.js'
+import type {IStorage} from './base.storage.js'
+import {
+  applyAttachmentHeader,
+  type StorageDownloadRequest,
+  type StorageDownloadResult,
+  successfulDownload,
+} from './download-response.js'
 
 const storageConfigSchema = z.object({
   url: z.string(),
@@ -167,15 +172,15 @@ export class WebdavStorage implements IStorage {
   }
 
   // eslint-disable-next-line @typescript-eslint/require-await
-  public async express(hashPath: string, req: DownloadRequest, res: Response): Promise<{bytes: number; hits: number}> {
-    if (this.emptyFiles.has(hashPath)) {
+  public async serve(request: StorageDownloadRequest, res: Response): Promise<StorageDownloadResult> {
+    applyAttachmentHeader(res, request)
+    if (this.emptyFiles.has(request.hashPath)) {
       res.end()
       return {bytes: 0, hits: 1}
     }
-    const path = join(this.basePath, hashPath)
+    const path = join(this.basePath, request.hashPath)
     const file = this.client.getFileDownloadLink(path)
     res.redirect(file)
-    const size = getSize(this.files.get(req.params.hash)?.size ?? 0, req.headers.range)
-    return {bytes: size, hits: 1}
+    return successfulDownload(this.files.get(request.hash)?.size ?? 0, request)
   }
 }

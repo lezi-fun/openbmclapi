@@ -1,13 +1,19 @@
 import type {Response} from 'express'
-import got from 'got'
+import got, {type Response as GotResponse} from 'got'
 import Keyv from 'keyv'
 import {KeyvFile} from 'keyv-file'
 import ms from 'ms'
 import {join} from 'node:path'
+import {pipeline} from 'node:stream/promises'
 import {z} from 'zod'
 import {fromZodError} from 'zod-validation-error'
-import {getSize} from '../util.js'
-import type {DownloadRequest} from './base.storage.js'
+import {
+  applyAttachmentHeader,
+  copyDownloadHeaders,
+  type StorageDownloadRequest,
+  type StorageDownloadResult,
+  successfulDownload,
+} from './download-response.js'
 import {WebdavStorage} from './webdav.storage.js'
 
 const storageConfigSchema = WebdavStorage.configSchema.extend({
@@ -47,25 +53,31 @@ export class AlistWebdavStorage extends WebdavStorage {
     })
   }
 
-  public async express(hashPath: string, req: DownloadRequest, res: Response): Promise<{bytes: number; hits: number}> {
-    if (this.emptyFiles.has(hashPath)) {
+  public override async serve(request: StorageDownloadRequest, res: Response): Promise<StorageDownloadResult> {
+    applyAttachmentHeader(res, request)
+    if (this.emptyFiles.has(request.hashPath)) {
       res.end()
       return {bytes: 0, hits: 1}
     }
-    const cachedUrl = await this.redirectUrlCache.get(hashPath)
-    const size = getSize(this.files.get(req.params.hash)?.size ?? 0, req.headers.range)
+    const fileSize = this.files.get(request.hash)?.size ?? 0
+    const cachedUrl = await this.redirectUrlCache.get(request.hashPath)
+    if (request.attachmentName) {
+      const path = join(this.basePath, request.hashPath)
+      return await this.proxyDownload(cachedUrl ?? this.client.getFileDownloadLink(path), request, res, fileSize)
+    }
     if (cachedUrl) {
       res.status(302).location(cachedUrl).send()
-      return {bytes: size, hits: 1}
+      return successfulDownload(fileSize, request)
     }
-    const path = join(this.basePath, hashPath)
+    const path = join(this.basePath, request.hashPath)
     const url = this.client.getFileDownloadLink(path)
     const resp = await got.get(url, {
       followRedirect: false,
       responseType: 'buffer',
       headers: {
-        range: req.headers.range,
+        range: request.range,
       },
+      method: request.method === 'HEAD' ? 'HEAD' : 'GET',
       https: {
         rejectUnauthorized: false,
       },
@@ -74,15 +86,46 @@ export class AlistWebdavStorage extends WebdavStorage {
       },
     })
     if (resp.statusCode >= 200 && resp.statusCode < 300) {
+      copyDownloadHeaders(resp.headers, res)
       res.status(resp.statusCode).send(resp.body)
-      return {bytes: resp.body.length, hits: 1}
+      return successfulDownload(fileSize, request)
     }
     if (resp.statusCode >= 300 && resp.statusCode < 400 && resp.headers.location) {
       res.status(resp.statusCode).location(resp.headers.location).send()
-      await this.redirectUrlCache.set(hashPath, resp.headers.location)
-      return {bytes: size, hits: 1}
+      await this.redirectUrlCache.set(request.hashPath, resp.headers.location)
+      return successfulDownload(fileSize, request)
     }
     res.status(resp.statusCode).send(resp.body)
     return {bytes: 0, hits: 0}
+  }
+
+  private async proxyDownload(
+    url: string,
+    request: StorageDownloadRequest,
+    res: Response,
+    fileSize: number,
+  ): Promise<StorageDownloadResult> {
+    const upstream = got.stream(url, {
+      followRedirect: true,
+      headers: {
+        range: request.range,
+      },
+      method: request.method === 'HEAD' ? 'HEAD' : 'GET',
+      https: {
+        rejectUnauthorized: false,
+      },
+      timeout: {
+        request: 30e3,
+      },
+    })
+    const upstreamResponse = await new Promise<GotResponse>((resolve, reject) => {
+      upstream.once('response', resolve)
+      upstream.once('error', reject)
+    })
+    res.status(upstreamResponse.statusCode)
+    copyDownloadHeaders(upstreamResponse.headers, res)
+    applyAttachmentHeader(res, request)
+    await pipeline(upstream, res)
+    return successfulDownload(fileSize, request)
   }
 }

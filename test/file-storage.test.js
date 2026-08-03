@@ -22,3 +22,42 @@ test('FileStorage reports missing and size-mismatched files in input order', asy
     await rm(dir, {recursive: true, force: true})
   }
 })
+
+test('FileStorage uses normalized range accounting and attachment headers', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openbmclapi-storage-'))
+  const storage = new FileStorage(dir)
+  const hash = 'd'.repeat(32)
+  const hashPath = hashToFilename(hash)
+  const headers = new Map()
+  let servedPath
+  const res = {
+    set(name, value) {
+      headers.set(name.toLowerCase(), value)
+      return this
+    },
+    sendFile(path, _options, callback) {
+      servedPath = path
+      callback()
+    },
+  }
+
+  try {
+    await storage.writeFile(hashPath, Buffer.alloc(100))
+    const result = await storage.serve(
+      {
+        hash,
+        hashPath,
+        method: 'GET',
+        range: 'bytes=10-19',
+        attachmentName: 'client.jar',
+      },
+      res,
+    )
+
+    assert.equal(servedPath, join(dir, hashPath))
+    assert.deepEqual(result, {bytes: 10, hits: 1})
+    assert.match(headers.get('content-disposition'), /^attachment;/)
+  } finally {
+    await rm(dir, {recursive: true, force: true})
+  }
+})

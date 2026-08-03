@@ -1,14 +1,19 @@
 import type {Response} from 'express'
 import {mkdir, readdir, rm, stat, unlink, writeFile} from 'node:fs/promises'
 import {join, sep} from 'node:path'
-import {min} from 'lodash-es'
 import pMap from 'p-map'
 import {grayText} from '../console-style.js'
 import {pathExists, writeFileAtomic} from '../fs.js'
 import {logger} from '../logger.js'
 import {IFileInfo, IGCCounter} from '../types.js'
 import {hashToFilename} from '../util.js'
-import type {DownloadRequest, IStorage} from './base.storage.js'
+import type {IStorage} from './base.storage.js'
+import {
+  applyAttachmentHeader,
+  type StorageDownloadRequest,
+  type StorageDownloadResult,
+  successfulDownload,
+} from './download-response.js'
 
 export class FileStorage implements IStorage {
   constructor(public readonly cacheDir: string) {}
@@ -78,27 +83,17 @@ export class FileStorage implements IStorage {
     return counter
   }
 
-  public async express(hashPath: string, req: DownloadRequest, res: Response): Promise<{bytes: number; hits: number}> {
-    const name = req.query.name as string
-    if (name) {
-      res.attachment(name)
-    }
-    const path = this.getAbsolutePath(hashPath)
+  public async serve(request: StorageDownloadRequest, res: Response): Promise<StorageDownloadResult> {
+    applyAttachmentHeader(res, request)
+    const path = this.getAbsolutePath(request.hashPath)
+    const file = await stat(path)
+    const result = successfulDownload(file.size, request)
     return await new Promise((resolve, reject) => {
       res.sendFile(path, {maxAge: '30d'}, (err) => {
-        let bytes = res.socket?.bytesWritten ?? 0
         if (!err || err?.message === 'Request aborted' || err?.message === 'write EPIPE') {
-          const header = res.getHeader('content-length')
-          if (header) {
-            const contentLength = parseInt(header.toString(), 10)
-            bytes = min([bytes, contentLength]) ?? 0
-          }
-          resolve({bytes, hits: 1})
+          resolve(result)
         } else {
-          if (err) {
-            return reject(err)
-          }
-          resolve({bytes: 0, hits: 0})
+          reject(err)
         }
       })
     })
