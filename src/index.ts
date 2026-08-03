@@ -1,18 +1,14 @@
 import cluster from 'node:cluster'
-import {readFileSync} from 'node:fs'
 import {config} from 'dotenv'
 import {random} from 'lodash-es'
 import ms from 'ms'
 import {bootstrap} from './bootstrap.js'
 import {logger} from './logger.js'
-
-const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
-  version: string
-}
+import {clusterVersion} from './version.js'
 
 config({quiet: true})
 if (process.env.NO_DAEMON || !cluster.isPrimary) {
-  bootstrap(packageJson.version).catch((err) => {
+  bootstrap(clusterVersion).catch((err) => {
     console.error(err)
     // eslint-disable-next-line n/no-process-exit
     process.exit(1)
