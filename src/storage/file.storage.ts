@@ -4,7 +4,7 @@ import {join, sep} from 'node:path'
 import {min} from 'lodash-es'
 import pMap from 'p-map'
 import {grayText} from '../console-style.js'
-import {pathExists, writeFileWithParents} from '../fs.js'
+import {pathExists, writeFileAtomic} from '../fs.js'
 import {logger} from '../logger.js'
 import {IFileInfo, IGCCounter} from '../types.js'
 import {hashToFilename} from '../util.js'
@@ -27,7 +27,7 @@ export class FileStorage implements IStorage {
   }
 
   public async writeFile(path: string, content: Buffer): Promise<void> {
-    await writeFileWithParents(join(this.cacheDir, path), content)
+    await writeFileAtomic(join(this.cacheDir, path), content)
   }
 
   public async exists(path: string): Promise<boolean> {
