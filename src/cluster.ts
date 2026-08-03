@@ -23,6 +23,7 @@ import prettyBytes from 'pretty-bytes'
 import {connect, Socket} from 'socket.io-client'
 import {Tail} from 'tail'
 import {config, type OpenbmclapiAgentConfiguration, OpenbmclapiAgentConfigurationSchema} from './config.js'
+import {ClusterLifecycle, type ClusterLifecycleState} from './cluster-lifecycle.js'
 import {rainbowText} from './console-style.js'
 import {FileListSchema} from './constants.js'
 import {storeVerifiedDownload} from './download.js'
@@ -52,8 +53,6 @@ const rootDir = join(import.meta.dirname, '..')
 
 export class Cluster {
   public readonly counters: ICounters = {hits: 0, bytes: 0}
-  public isEnabled = false
-  public wantEnable = false
   public interval?: NodeJS.Timeout
   public nginxProcess?: ChildProcess
   public readonly storage: IStorage
@@ -68,6 +67,7 @@ export class Cluster {
   private readonly tmpDir = join(tmpdir(), 'openbmclapi')
   private readonly keepalive = new Keepalive(ms('1m'), this)
   private readonly downloadPromise = new Map<string, Promise<void>>()
+  private readonly lifecycle: ClusterLifecycle
   private socket?: Socket
 
   private server?: ClusterServer
@@ -81,6 +81,10 @@ export class Cluster {
     this._port = config.port
     this.publicPort = config.clusterPublicPort ?? config.port
     this.ua = `openbmclapi-cluster/${version}`
+    this.lifecycle = new ClusterLifecycle(
+      async () => await this.enableNode(),
+      async () => await this.disableNode(),
+    )
     whiteListDomain.push(this.prefixUrl)
     this.got = got.extend({
       prefixUrl: this.prefixUrl,
@@ -120,6 +124,18 @@ export class Cluster {
 
   public get port(): number | string {
     return this._port
+  }
+
+  public get lifecycleState(): ClusterLifecycleState {
+    return this.lifecycle.state
+  }
+
+  public get isEnabled(): boolean {
+    return this.lifecycle.isEnabled
+  }
+
+  public get wantEnable(): boolean {
+    return this.lifecycle.wantEnable
   }
 
   public async init(): Promise<void> {
@@ -411,7 +427,12 @@ export class Cluster {
   }
 
   public connect(): void {
-    if (this.socket?.connected) return
+    if (this.socket) {
+      if (!this.socket.connected) {
+        this.socket.connect()
+      }
+      return
+    }
     this.socket = connect(this.prefixUrl, {
       transports: ['websocket'],
       auth: (cb) => {
@@ -435,7 +456,7 @@ export class Cluster {
     })
     this.socket.on('disconnect', (reason) => {
       logger.warn(`与服务器断开连接: ${reason}`)
-      this.isEnabled = false
+      this.lifecycle.markDisconnected()
       this.keepalive.stop()
     })
     this.socket.on('exception', (err) => {
@@ -481,28 +502,13 @@ export class Cluster {
   }
 
   public async enable(): Promise<void> {
-    if (this.isEnabled) return
     logger.trace('enable')
-    await this._enable()
-    this.isEnabled = true
-    this.wantEnable = true
+    await this.lifecycle.enable()
   }
 
   public async disable(): Promise<void> {
-    if (!this.socket) return
-    this.keepalive.stop()
-    this.wantEnable = false
-    const [err, ack] = (await this.socket.emitWithAck('disable', null)) as [object, boolean]
-    this.isEnabled = false
-    if (err) {
-      if (typeof err === 'object' && 'message' in err) {
-        throw new Error(err.message as string)
-      }
-    }
-    if (!ack) {
-      throw new Error('节点禁用失败')
-    }
-    this.socket?.disconnect()
+    logger.trace('disable')
+    await this.lifecycle.disable()
   }
 
   public async downloadFile(hash: string): Promise<void> {
@@ -573,7 +579,7 @@ export class Cluster {
       })
   }
 
-  private async _enable(): Promise<void> {
+  private async enableNode(): Promise<void> {
     let err: unknown
     let ack: unknown
     if (!this.socket) {
@@ -606,6 +612,28 @@ export class Cluster {
 
     logger.info(rainbowText('start doing my job'))
     this.keepalive.start(this.socket)
+  }
+
+  private async disableNode(): Promise<void> {
+    this.keepalive.stop()
+    const socket = this.socket
+    if (!socket?.connected) return
+
+    try {
+      const [err, ack] = (await socket.emitWithAck('disable', null)) as [object, boolean]
+      if (err && typeof err === 'object' && 'message' in err) {
+        throw new Error(err.message as string)
+      }
+      if (!ack) {
+        throw new Error('节点禁用失败')
+      }
+      socket.disconnect()
+    } catch (error) {
+      if (socket.connected) {
+        this.keepalive.start(socket)
+      }
+      throw error
+    }
   }
 
   private onConnectionError(event: string, err: Error): void {

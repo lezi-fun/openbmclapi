@@ -126,8 +126,7 @@ export class TokenManager {
     if (this.stopped) return
 
     this.clearRefreshTimer()
-    let timer: RefreshTimer
-    timer = this.schedule(() => {
+    const timer = this.schedule(() => {
       if (this.refreshTimer !== timer) return
       this.refreshTimer = undefined
       if (this.stopped) return
