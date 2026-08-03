@@ -25,6 +25,7 @@ import {Tail} from 'tail'
 import {config, type OpenbmclapiAgentConfiguration, OpenbmclapiAgentConfigurationSchema} from './config.js'
 import {rainbowText} from './console-style.js'
 import {FileListSchema} from './constants.js'
+import {storeVerifiedDownload} from './download.js'
 import {validateFile} from './file.js'
 import {pathExists, writeFileWithParents} from './fs.js'
 import {Keepalive} from './keepalive.js'
@@ -511,12 +512,7 @@ export class Cluster {
     })
 
     const body = Buffer.from(res.body)
-    await this.storage.writeFile(hashToFilename(hash), body, {
-      path: `/download/${hash}`,
-      hash,
-      size: body.length,
-      mtime: Date.now(),
-    })
+    await storeVerifiedDownload(this.storage, hash, body)
   }
 
   public async requestCert(): Promise<void> {
