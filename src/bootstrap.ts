@@ -113,6 +113,7 @@ export async function bootstrap(version: string): Promise<void> {
     }
 
     stopping = true
+    tokenManager.stop()
     clearTimeout(checkFileInterval)
     if (cluster.interval) {
       clearInterval(cluster.interval)
