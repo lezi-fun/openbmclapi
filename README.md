@@ -190,7 +190,7 @@ git fetch origin master
 git rev-list --left-right --count HEAD...origin/master
 BACKUP_BRANCH="backup/v1-before-v2-$(date +%Y%m%d-%H%M%S)"
 git branch "$BACKUP_BRANCH"
-git switch -C master origin/master
+git reset --hard origin/master
 echo "旧版本和本地提交已保存在 $BACKUP_BRANCH"
 node -e 'const p=require("./package.json"); if (!p.version.startsWith("2.") || !p.scripts?.check || !p.scripts?.start) process.exit(1); console.log("OpenBMCLAPI", p.version)'
 ```
@@ -200,8 +200,14 @@ node -e 'const p=require("./package.json"); if (!p.version.startsWith("2.") || !
 `bun.lock` 和日志不参与这项检查。
 
 `git rev-list` 输出左侧是本地独有提交数，右侧是远端独有提交数。无论是否分叉，当前
-HEAD 都会先保存到带时间戳的 `backup/v1-before-v2-*` 分支，再将 `master` 切换到现代版；
-本地提交不会丢失。最后一条命令必须输出 `OpenBMCLAPI 2.x.x`，否则不要继续安装依赖。
+HEAD 都会先保存到带时间戳的 `backup/v1-before-v2-*` 分支，再让 `master` 的受版本控制
+文件与现代版完全一致；本地提交不会丢失。
+
+这一步只更新或移除 Git 已跟踪的项目文件。未跟踪和被忽略的 `.env`、`cache/`、
+`.env.v1-backup`、`bun.lock`、`nohup.out` 及其他不与 v2 文件同路径的文件都会保留。
+与 v2 项目文件同路径的旧文件属于更新目标，可能被替换；如需保留，应提前移到项目
+目录外。整个流程不会执行 `git clean`，因此不会清理其他不重复的文件。最后一条命令
+必须输出 `OpenBMCLAPI 2.x.x`，否则不要继续安装依赖。
 
 如果原 v1 是 Release 压缩包、目录中没有 `.git/`，不要在旧目录内执行 Git 命令。
 保持当前目录为 v1 安装目录，将 v2 安装到当前用户可写的主目录，并链接原缓存：
