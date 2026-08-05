@@ -9,7 +9,8 @@
 
 - Primary 进程只监管一个 Worker，并负责退避重启。
 - Worker 同时负责控制面连接、节点生命周期、文件同步、HTTP 数据面、存储适配、
-  可选 Nginx 和 UPnP。
+  可选 Nginx 和 UPnP；其中 `ControllerClient` 已独立负责控制面 REST、认证和编解码，
+  `Cluster` 继续负责 Socket.IO 与运行时编排。
 - 主控文件清单是缓存状态的事实源。
 - 文件以内容 hash 标识，逻辑存储键为 `<hash 前两位>/<完整 hash>`。
 
@@ -160,13 +161,16 @@ Storage V2 将 `bytes` 明确定义为成功请求逻辑交付的对象载荷字
    上游响应头与 `bytes/hits` 计量；OSS 代理现在会向对象存储转发 Range。
 7. Worker 使用根 `AbortController` 统一取消控制面请求、文件同步、重试等待、按需回源、
    对象存储流、后台 GC、清单刷新和 UPnP 续期；停机等待已登记后台任务收敛后返回。
+8. 控制面 REST 已提取为 `ControllerClient`，集中管理 URL、Bearer Token、超时、缓存、
+   文件清单 Zstd/Avro 解码、配置校验、下载进度和错误上报；`Cluster` 只保留委托入口。
 
 ## 迁移顺序
 
 1. 建立假主控、Socket ACK、清单编解码、存储一致性和可控时钟测试。
 2. 已完成增量同步和 MinIO GC 的代码修复及纯函数回归测试；真实 MinIO 环境仍需
    dry-run 验证后再启用删除。
-3. 已从 `Cluster` 提取显式节点状态机且未改变协议；下一步继续提取控制面客户端。
+3. 已从 `Cluster` 提取显式节点状态机和控制面 REST 客户端且未改变协议；下一步拆分
+   Socket.IO 连接、HTTP 服务和同步编排。
 4. 已引入支持原子写入、统一 Range、附件名和计量语义的 Storage V2。
 5. token 刷新恢复、ACK 等待取消和全局停机取消已完成；继续完善背压和子进程恢复。
 6. 使用影子比较、单节点 canary、隔离删除和能力协商渐进发布。

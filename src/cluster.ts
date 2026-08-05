@@ -1,19 +1,16 @@
-import {decompress} from '@mongodb-js/zstd'
 import {spawn, type ChildProcess} from 'node:child_process'
 import {readFileSync} from 'node:fs'
 import {cp, mkdir, mkdtemp, open, readFile, rm} from 'node:fs/promises'
 import {createServer, type Server} from 'node:http'
-import {constants, createSecureServer, type Http2SecureServer} from 'node:http2'
-import {Agent as HttpsAgent} from 'node:https'
+import {createSecureServer, type Http2SecureServer} from 'node:http2'
 import {tmpdir, userInfo} from 'node:os'
 import {dirname, join} from 'node:path'
 import {setTimeout as delay} from 'node:timers/promises'
 import {MultiBar} from 'cli-progress'
 import express, {type NextFunction, type Response} from 'express'
-import got, {type Got, HTTPError, RequestError} from 'got'
+import {HTTPError, RequestError} from 'got'
 import http2Express from 'http2-express'
 import ipaddr from 'ipaddr.js'
-import stringifySafe from 'json-stringify-safe'
 import {template, toString} from 'lodash-es'
 import morgan from 'morgan'
 import ms from 'ms'
@@ -22,16 +19,15 @@ import pRetry from 'p-retry'
 import prettyBytes from 'pretty-bytes'
 import {connect, Socket} from 'socket.io-client'
 import {Tail} from 'tail'
-import {config, type OpenbmclapiAgentConfiguration, OpenbmclapiAgentConfigurationSchema} from './config.js'
+import {config, type OpenbmclapiAgentConfiguration} from './config.js'
 import {ClusterLifecycle, type ClusterLifecycleState} from './cluster-lifecycle.js'
 import {rainbowText} from './console-style.js'
-import {FileListSchema} from './constants.js'
+import {ControllerClient} from './controller-client.js'
 import {storeVerifiedDownload} from './download.js'
 import {validateFile} from './file.js'
 import {pathExists, writeFileWithParents} from './fs.js'
 import {Keepalive} from './keepalive.js'
 import {logger} from './logger.js'
-import {beforeError} from './modules/got-hooks.js'
 import {AuthRouteFactory} from './routes/auth.route.js'
 import MeasureRouteFactory from './routes/measure.route.js'
 import {abortable, abortReason, isAbortReason, RuntimeLifecycle} from './runtime-lifecycle.js'
@@ -49,8 +45,6 @@ interface ICounters {
   bytes: number
 }
 
-const whiteListDomain = ['localhost', 'bangbang93.com']
-
 const rootDir = join(import.meta.dirname, '..')
 
 export class Cluster {
@@ -59,13 +53,11 @@ export class Cluster {
   public nginxProcess?: ChildProcess
   public readonly storage: IStorage
 
-  private readonly prefixUrl = process.env.CLUSTER_BMCLAPI ?? 'https://openbmclapi.bangbang93.com'
+  private readonly prefixUrl: string
   private host?: string
   private _port: number | string
   private readonly publicPort: number
-  private readonly ua: string
-  private readonly got: Got
-  private readonly requestCache = new Map()
+  private readonly controller: ControllerClient
   private readonly tmpDir = join(tmpdir(), 'openbmclapi')
   private readonly keepalive = new Keepalive(ms('1m'), this)
   private readonly downloadPromise = new Map<string, Promise<void>>()
@@ -79,50 +71,17 @@ export class Cluster {
     private readonly version: string,
     private readonly tokenManager: TokenManager,
     private readonly runtime: RuntimeLifecycle = new RuntimeLifecycle(),
+    controller?: ControllerClient,
   ) {
     this.host = config.clusterIp
     this._port = config.port
     this.publicPort = config.clusterPublicPort ?? config.port
-    this.ua = `openbmclapi-cluster/${version}`
+    this.controller = controller ?? new ControllerClient(version, tokenManager, runtime.signal)
+    this.prefixUrl = this.controller.prefixUrl
     this.lifecycle = new ClusterLifecycle(
       async () => await this.enableNode(),
       async () => await this.disableNode(),
     )
-    whiteListDomain.push(this.prefixUrl)
-    this.got = got.extend({
-      prefixUrl: this.prefixUrl,
-      headers: {
-        'user-agent': this.ua,
-      },
-      responseType: 'buffer',
-      signal: this.runtime.signal,
-      timeout: {
-        connect: ms('10s'),
-        response: ms('10s'),
-        request: ms('5m'),
-      },
-      agent: {
-        https: new HttpsAgent({
-          keepAlive: true,
-        }),
-      },
-      hooks: {
-        beforeRequest: [
-          async (options) => {
-            const url = options.url
-            if (!url) return
-            if (
-              whiteListDomain.some((domain) => {
-                return url.hostname.includes(domain)
-              })
-            ) {
-              options.headers.authorization = `Bearer ${await this.tokenManager.getToken()}`
-            }
-          },
-        ],
-        beforeError,
-      },
-    })
     this.storage = getStorage(config)
   }
 
@@ -159,30 +118,11 @@ export class Cluster {
   }
 
   public async getFileList(lastModified?: number): Promise<IFileList> {
-    const res = await this.got.get('openbmclapi/files', {
-      responseType: 'buffer',
-      cache: this.requestCache,
-      searchParams: {
-        lastModified,
-      },
-    })
-    if (res.statusCode === constants.HTTP_STATUS_NO_CONTENT) {
-      return {
-        files: [],
-      }
-    }
-    const decompressed = await decompress(Buffer.from(res.body))
-    return {
-      files: FileListSchema.fromBuffer(Buffer.from(decompressed)) as IFileList['files'],
-    }
+    return await this.controller.getFileList(lastModified)
   }
 
   public async getConfiguration(): Promise<OpenbmclapiAgentConfiguration> {
-    const res = await this.got.get('openbmclapi/configuration', {
-      responseType: 'json',
-      cache: this.requestCache,
-    })
-    return OpenbmclapiAgentConfigurationSchema.parse(res.body)
+    return await this.controller.getConfiguration()
   }
 
   public async syncFiles(fileList: IFileList, syncConfig: OpenbmclapiAgentConfiguration['sync']): Promise<void> {
@@ -215,15 +155,9 @@ export class Cluster {
             await pRetry(
               async () => {
                 bar.update(0)
-                const res = await this.got
-                  .get<Buffer>(file.path.substring(1), {
-                    retry: {
-                      limit: 0,
-                    },
-                  })
-                  .on('downloadProgress', (progress) => {
-                    bar.update(progress.transferred)
-                  })
+                const res = await this.controller.downloadFile(file.path, (transferred) => {
+                  bar.update(transferred)
+                })
 
                 const body = Buffer.from(res.body)
                 this.runtime.signal.throwIfAborted()
@@ -252,22 +186,11 @@ export class Cluster {
                   if (e instanceof RequestError) {
                     const redirectUrls = e.response?.redirectUrls
                     if (redirectUrls?.length) {
-                      const urls = [
-                        new URL(file.path, this.prefixUrl).toString(),
-                        ...redirectUrls.map((e) => e.toString()),
-                      ]
-                      await this.got
-                        .post('openbmclapi/report', {
-                          json: {
-                            urls,
-                            error: stringifySafe({message: e.message}),
-                          },
-                        })
-                        .catch((e) => {
-                          if (!isAbortReason(e, this.runtime.signal)) {
-                            logger.error(e, '上报重定向失败')
-                          }
-                        })
+                      await this.controller.reportDownloadError(file.path, redirectUrls, e.message).catch((e) => {
+                        if (!isAbortReason(e, this.runtime.signal)) {
+                          logger.error(e, '上报重定向失败')
+                        }
+                      })
                     }
                   }
                 },
@@ -547,12 +470,7 @@ export class Cluster {
   }
 
   public async downloadFile(hash: string): Promise<void> {
-    const res = await this.got.get(`openbmclapi/download/${hash}`, {
-      responseType: 'buffer',
-      searchParams: {noopen: 1},
-    })
-
-    const body = Buffer.from(res.body)
+    const body = await this.controller.downloadOnDemand(hash)
     this.runtime.signal.throwIfAborted()
     await storeVerifiedDownload(this.storage, hash, body)
   }
