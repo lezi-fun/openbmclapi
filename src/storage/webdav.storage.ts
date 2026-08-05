@@ -100,7 +100,10 @@ export class WebdavStorage implements IStorage {
     return exists
   }
 
-  public async getMissingFiles<T extends {path: string; hash: string; size: number}>(files: T[]): Promise<T[]> {
+  public async getMissingFiles<T extends {path: string; hash: string; size: number}>(
+    files: T[],
+    signal?: AbortSignal,
+  ): Promise<T[]> {
     const remoteFileList = new Map(files.map((file) => [file.hash, file]))
     if (this.files.size !== 0) {
       for (const hash of this.files.keys()) {
@@ -113,10 +116,12 @@ export class WebdavStorage implements IStorage {
     let cur = 0
 
     while (queue.length !== 0) {
+      signal?.throwIfAborted()
       const nextQueue = [] as string[]
       await pMap(
         queue,
         async (dir) => {
+          signal?.throwIfAborted()
           const entries = await this.client.getDirectoryContents(dir)
           entries.sort((a, b) => a.basename.localeCompare(b.basename))
           logger.trace(`checking ${dir}, (${++cur}/${count})`)
@@ -135,6 +140,7 @@ export class WebdavStorage implements IStorage {
         },
         {
           concurrency: 10,
+          signal,
         },
       )
       queue = nextQueue
@@ -142,7 +148,7 @@ export class WebdavStorage implements IStorage {
     return [...remoteFileList.values()]
   }
 
-  public async gc(files: {path: string; hash: string; size: number}[]): Promise<IGCCounter> {
+  public async gc(files: {path: string; hash: string; size: number}[], signal?: AbortSignal): Promise<IGCCounter> {
     const counter = {count: 0, size: 0}
     const fileSet = new Set<string>()
     for (const file of files) {
@@ -150,11 +156,13 @@ export class WebdavStorage implements IStorage {
     }
     const queue = [this.basePath]
     do {
+      signal?.throwIfAborted()
       const dir = queue.pop()
       if (!dir) break
       const entries = await this.client.getDirectoryContents(dir)
       entries.sort((a, b) => a.basename.localeCompare(b.basename))
       for (const entry of entries) {
+        signal?.throwIfAborted()
         if (entry.type === 'directory') {
           queue.push(entry.filename)
           continue
@@ -173,6 +181,7 @@ export class WebdavStorage implements IStorage {
 
   // eslint-disable-next-line @typescript-eslint/require-await
   public async serve(request: StorageDownloadRequest, res: Response): Promise<StorageDownloadResult> {
+    request.signal?.throwIfAborted()
     applyAttachmentHeader(res, request)
     if (this.emptyFiles.has(request.hashPath)) {
       res.end()

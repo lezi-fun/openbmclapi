@@ -5,6 +5,7 @@ import pMap from 'p-map'
 import {grayText} from '../console-style.js'
 import {pathExists, writeFileAtomic} from '../fs.js'
 import {logger} from '../logger.js'
+import {abortReason} from '../runtime-lifecycle.js'
 import {IFileInfo, IGCCounter} from '../types.js'
 import {hashToFilename} from '../util.js'
 import type {IStorage} from './base.storage.js'
@@ -39,7 +40,7 @@ export class FileStorage implements IStorage {
     return await pathExists(join(this.cacheDir, path))
   }
 
-  public async getMissingFiles(files: IFileInfo[]): Promise<IFileInfo[]> {
+  public async getMissingFiles(files: IFileInfo[], signal?: AbortSignal): Promise<IFileInfo[]> {
     const missingFiles = await pMap(
       files,
       async (file) => {
@@ -48,12 +49,13 @@ export class FileStorage implements IStorage {
       },
       {
         concurrency: 1e3,
+        signal,
       },
     )
     return missingFiles.filter((file) => file !== undefined)
   }
 
-  public async gc(files: {path: string; hash: string; size: number}[]): Promise<IGCCounter> {
+  public async gc(files: {path: string; hash: string; size: number}[], signal?: AbortSignal): Promise<IGCCounter> {
     const counter = {count: 0, size: 0}
     const fileSet = new Set<string>()
     for (const file of files) {
@@ -61,10 +63,12 @@ export class FileStorage implements IStorage {
     }
     const queue = [this.cacheDir]
     do {
+      signal?.throwIfAborted()
       const dir = queue.pop()
       if (!dir) break
       const entries = await readdir(dir)
       for (const entry of entries) {
+        signal?.throwIfAborted()
         const p = join(dir, entry)
         const s = await stat(p)
         if (s.isDirectory()) {
@@ -84,12 +88,32 @@ export class FileStorage implements IStorage {
   }
 
   public async serve(request: StorageDownloadRequest, res: Response): Promise<StorageDownloadResult> {
+    request.signal?.throwIfAborted()
     applyAttachmentHeader(res, request)
     const path = this.getAbsolutePath(request.hashPath)
     const file = await stat(path)
+    request.signal?.throwIfAborted()
     const result = successfulDownload(file.size, request)
     return await new Promise((resolve, reject) => {
+      const onAbort = () => {
+        if (request.signal) {
+          const reason = abortReason(request.signal)
+          res.destroy(reason)
+          reject(reason)
+        }
+      }
+      request.signal?.addEventListener('abort', onAbort, {once: true})
+      if (request.signal?.aborted) {
+        request.signal.removeEventListener('abort', onAbort)
+        reject(abortReason(request.signal))
+        return
+      }
       res.sendFile(path, {maxAge: '30d'}, (err) => {
+        request.signal?.removeEventListener('abort', onAbort)
+        if (request.signal?.aborted) {
+          reject(abortReason(request.signal))
+          return
+        }
         if (!err || err?.message === 'Request aborted' || err?.message === 'write EPIPE') {
           resolve(result)
         } else {

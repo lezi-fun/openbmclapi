@@ -61,3 +61,61 @@ test('FileStorage uses normalized range accounting and attachment headers', asyn
     await rm(dir, {recursive: true, force: true})
   }
 })
+
+test('FileStorage aborts an active response with the runtime reason', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openbmclapi-storage-'))
+  const storage = new FileStorage(dir)
+  const hash = 'e'.repeat(32)
+  const hashPath = hashToFilename(hash)
+  const controller = new AbortController()
+  const reason = new Error('shutdown')
+  let sendCallback
+  let destroyedWith
+  let resolveSendStarted
+  const sendStarted = new Promise((resolve) => {
+    resolveSendStarted = resolve
+  })
+  const res = {
+    set() {
+      return this
+    },
+    sendFile(_path, _options, callback) {
+      sendCallback = callback
+      resolveSendStarted()
+    },
+    destroy(error) {
+      destroyedWith = error
+      sendCallback?.(new Error('Request aborted'))
+    },
+  }
+
+  try {
+    await storage.writeFile(hashPath, Buffer.alloc(100))
+    const serving = storage.serve({hash, hashPath, method: 'GET', signal: controller.signal}, res)
+    await sendStarted
+    controller.abort(reason)
+
+    await assert.rejects(serving, (error) => error === reason)
+    assert.equal(destroyedWith, reason)
+  } finally {
+    await rm(dir, {recursive: true, force: true})
+  }
+})
+
+test('FileStorage cancellation prevents garbage collection from deleting files', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'openbmclapi-storage-'))
+  const storage = new FileStorage(dir)
+  const hash = 'f'.repeat(32)
+  const hashPath = hashToFilename(hash)
+  const controller = new AbortController()
+  const reason = new Error('shutdown')
+
+  try {
+    await storage.writeFile(hashPath, Buffer.alloc(10))
+    controller.abort(reason)
+    await assert.rejects(storage.gc([], controller.signal), (error) => error === reason)
+    assert.equal(await storage.exists(hashPath), true)
+  } finally {
+    await rm(dir, {recursive: true, force: true})
+  }
+})

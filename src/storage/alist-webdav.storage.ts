@@ -54,6 +54,7 @@ export class AlistWebdavStorage extends WebdavStorage {
   }
 
   public override async serve(request: StorageDownloadRequest, res: Response): Promise<StorageDownloadResult> {
+    request.signal?.throwIfAborted()
     applyAttachmentHeader(res, request)
     if (this.emptyFiles.has(request.hashPath)) {
       res.end()
@@ -84,6 +85,7 @@ export class AlistWebdavStorage extends WebdavStorage {
       timeout: {
         request: 30e3,
       },
+      signal: request.signal,
     })
     if (resp.statusCode >= 200 && resp.statusCode < 300) {
       copyDownloadHeaders(resp.headers, res)
@@ -117,6 +119,7 @@ export class AlistWebdavStorage extends WebdavStorage {
       timeout: {
         request: 30e3,
       },
+      signal: request.signal,
     })
     const upstreamResponse = await new Promise<GotResponse>((resolve, reject) => {
       upstream.once('response', resolve)
@@ -125,7 +128,7 @@ export class AlistWebdavStorage extends WebdavStorage {
     res.status(upstreamResponse.statusCode)
     copyDownloadHeaders(upstreamResponse.headers, res)
     applyAttachmentHeader(res, request)
-    await pipeline(upstream, res)
+    await pipeline(upstream, res, {signal: request.signal})
     return successfulDownload(fileSize, request)
   }
 }

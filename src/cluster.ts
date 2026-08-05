@@ -34,6 +34,7 @@ import {logger} from './logger.js'
 import {beforeError} from './modules/got-hooks.js'
 import {AuthRouteFactory} from './routes/auth.route.js'
 import MeasureRouteFactory from './routes/measure.route.js'
+import {abortable, abortReason, isAbortReason, RuntimeLifecycle} from './runtime-lifecycle.js'
 import {getStorage, type IStorage} from './storage/base.storage.js'
 import {normalizeAttachmentName, type StorageDownloadRequest} from './storage/download-response.js'
 import type {TokenManager} from './token.js'
@@ -77,6 +78,7 @@ export class Cluster {
     private readonly clusterSecret: string,
     private readonly version: string,
     private readonly tokenManager: TokenManager,
+    private readonly runtime: RuntimeLifecycle = new RuntimeLifecycle(),
   ) {
     this.host = config.clusterIp
     this._port = config.port
@@ -93,6 +95,7 @@ export class Cluster {
         'user-agent': this.ua,
       },
       responseType: 'buffer',
+      signal: this.runtime.signal,
       timeout: {
         connect: ms('10s'),
         response: ms('10s'),
@@ -142,7 +145,7 @@ export class Cluster {
   public async init(): Promise<void> {
     await this.storage.init?.()
     if (config.enableUpnp) {
-      const ip = await setupUpnp(config.port, config.clusterPublicPort)
+      const ip = await setupUpnp(config.port, config.clusterPublicPort, this.runtime.signal)
       const addr = ipaddr.parse(ip)
       if (addr.kind() !== 'ipv4') {
         throw new Error('不支持ipv6')
@@ -183,12 +186,13 @@ export class Cluster {
   }
 
   public async syncFiles(fileList: IFileList, syncConfig: OpenbmclapiAgentConfiguration['sync']): Promise<void> {
+    this.runtime.signal.throwIfAborted()
     const storageReady = await this.storage.check()
     if (!storageReady) {
       throw new Error('存储异常')
     }
     logger.info('正在检查缺失文件')
-    const missingFiles = await this.storage.getMissingFiles(fileList.files)
+    const missingFiles = await this.storage.getMissingFiles(fileList.files, this.runtime.signal)
     if (missingFiles.length === 0) {
       return
     }
@@ -202,88 +206,101 @@ export class Cluster {
     const totalBar = multibar.create(missingFiles.length, 0, {filename: '总文件数'})
     const parallel = syncConfig.concurrency
     let hasError = false
-    await pMap(
-      missingFiles,
-      async (file) => {
-        const bar = multibar.create(file.size, 0, {filename: file.path})
-        try {
-          await pRetry(
-            async () => {
-              bar.update(0)
-              const res = await this.got
-                .get<Buffer>(file.path.substring(1), {
-                  retry: {
-                    limit: 0,
-                  },
-                })
-                .on('downloadProgress', (progress) => {
-                  bar.update(progress.transferred)
-                })
+    try {
+      await pMap(
+        missingFiles,
+        async (file) => {
+          const bar = multibar.create(file.size, 0, {filename: file.path})
+          try {
+            await pRetry(
+              async () => {
+                bar.update(0)
+                const res = await this.got
+                  .get<Buffer>(file.path.substring(1), {
+                    retry: {
+                      limit: 0,
+                    },
+                  })
+                  .on('downloadProgress', (progress) => {
+                    bar.update(progress.transferred)
+                  })
 
-              const body = Buffer.from(res.body)
-              const isFileCorrect = validateFile(body, file.hash)
-              if (!isFileCorrect) {
-                throw new RequestError(`文件${file.path}校验失败`, new Error(`文件${file.path}校验失败`), res.request)
-              }
-              await this.storage.writeFile(hashToFilename(file.hash), body, file)
-            },
-            {
-              retries: 10,
-              onFailedAttempt: async (e) => {
-                if (e instanceof HTTPError) {
-                  logger.debug(
-                    {redirectUrls: e.response.redirectUrls},
-                    `下载文件${file.path}失败: ${e.response.statusCode}`,
-                  )
-                  logger.trace({err: e}, toString(e.response.body))
-                } else {
-                  logger.debug({err: e}, `下载文件${file.path}失败，正在重试`)
+                const body = Buffer.from(res.body)
+                this.runtime.signal.throwIfAborted()
+                const isFileCorrect = validateFile(body, file.hash)
+                if (!isFileCorrect) {
+                  throw new RequestError(`文件${file.path}校验失败`, new Error(`文件${file.path}校验失败`), res.request)
                 }
-
-                if (e instanceof RequestError) {
-                  const redirectUrls = e.response?.redirectUrls
-                  if (redirectUrls?.length) {
-                    const urls = [
-                      new URL(file.path, this.prefixUrl).toString(),
-                      ...redirectUrls.map((e) => e.toString()),
-                    ]
-                    await this.got
-                      .post('openbmclapi/report', {
-                        json: {
-                          urls,
-                          error: stringifySafe({message: e.message}),
-                        },
-                      })
-                      .catch((e) => {
-                        logger.error(e, '上报重定向失败')
-                      })
-                  }
-                }
+                await this.storage.writeFile(hashToFilename(file.hash), body, file)
               },
-            },
-          )
-        } catch (e) {
-          hasError = true
-          if (e instanceof HTTPError) {
-            logger.error(
-              {redirectUrls: e.response.redirectUrls},
-              `下载文件${file.path}失败: ${e.response.statusCode}, url: ${e.response.url}`,
+              {
+                retries: 10,
+                signal: this.runtime.signal,
+                unref: true,
+                onFailedAttempt: async (e) => {
+                  this.runtime.signal.throwIfAborted()
+                  if (e instanceof HTTPError) {
+                    logger.debug(
+                      {redirectUrls: e.response.redirectUrls},
+                      `下载文件${file.path}失败: ${e.response.statusCode}`,
+                    )
+                    logger.trace({err: e}, toString(e.response.body))
+                  } else {
+                    logger.debug({err: e}, `下载文件${file.path}失败，正在重试`)
+                  }
+
+                  if (e instanceof RequestError) {
+                    const redirectUrls = e.response?.redirectUrls
+                    if (redirectUrls?.length) {
+                      const urls = [
+                        new URL(file.path, this.prefixUrl).toString(),
+                        ...redirectUrls.map((e) => e.toString()),
+                      ]
+                      await this.got
+                        .post('openbmclapi/report', {
+                          json: {
+                            urls,
+                            error: stringifySafe({message: e.message}),
+                          },
+                        })
+                        .catch((e) => {
+                          if (!isAbortReason(e, this.runtime.signal)) {
+                            logger.error(e, '上报重定向失败')
+                          }
+                        })
+                    }
+                  }
+                },
+              },
             )
-            logger.trace({err: e}, toString(e.response.body))
-          } else {
-            logger.error({err: e}, `下载文件${file.path}失败`)
+          } catch (e) {
+            if (this.runtime.signal.aborted) {
+              throw abortReason(this.runtime.signal)
+            }
+            hasError = true
+            if (e instanceof HTTPError) {
+              logger.error(
+                {redirectUrls: e.response.redirectUrls},
+                `下载文件${file.path}失败: ${e.response.statusCode}, url: ${e.response.url}`,
+              )
+              logger.trace({err: e}, toString(e.response.body))
+            } else {
+              logger.error({err: e}, `下载文件${file.path}失败`)
+            }
+          } finally {
+            totalBar.increment()
+            bar.stop()
+            multibar.remove(bar)
           }
-        } finally {
-          totalBar.increment()
-          bar.stop()
-          multibar.remove(bar)
-        }
-      },
-      {
-        concurrency: parallel,
-      },
-    )
-    multibar.stop()
+        },
+        {
+          concurrency: parallel,
+          signal: this.runtime.signal,
+        },
+      )
+    } finally {
+      multibar.stop()
+    }
     if (hasError) {
       throw new Error('同步失败')
     } else {
@@ -316,7 +333,7 @@ export class Cluster {
           if (this.downloadPromise.has(hash)) {
             await this.downloadPromise.get(hash)
           } else {
-            const promise = this.downloadFile(hash)
+            const promise = this.runtime.track(this.downloadFile(hash))
             try {
               this.downloadPromise.set(hash, promise)
               await promise
@@ -332,6 +349,7 @@ export class Cluster {
           method: req.method,
           range: req.headers.range,
           attachmentName: normalizeAttachmentName(req.query.name),
+          signal: this.runtime.signal,
         }
         const {bytes, hits} = await this.storage.serve(downloadRequest, res)
         this.counters.bytes += bytes
@@ -491,14 +509,18 @@ export class Cluster {
   }
 
   public async portCheck(): Promise<void> {
-    const [err, ack] = (await this.socket?.emitWithAck('port-check', {
-      host: this.host,
-      port: this.publicPort,
-      version: this.version,
-      byoc: config.byoc,
-      noFastEnable: process.env.NO_FAST_ENABLE === 'true',
-      flavor: config.flavor,
-    })) as [object, boolean]
+    if (!this.socket) throw new Error('未连接到服务器')
+    const [err, ack] = (await abortable(
+      this.socket.emitWithAck('port-check', {
+        host: this.host,
+        port: this.publicPort,
+        version: this.version,
+        byoc: config.byoc,
+        noFastEnable: process.env.NO_FAST_ENABLE === 'true',
+        flavor: config.flavor,
+      }),
+      this.runtime.signal,
+    )) as [object, boolean]
     if (err) {
       if (typeof err === 'object' && 'message' in err) {
         throw new Error(err.message as string)
@@ -519,6 +541,11 @@ export class Cluster {
     await this.lifecycle.disable()
   }
 
+  public disconnect(): void {
+    this.keepalive.stop()
+    this.socket?.disconnect()
+  }
+
   public async downloadFile(hash: string): Promise<void> {
     const res = await this.got.get(`openbmclapi/download/${hash}`, {
       responseType: 'buffer',
@@ -526,12 +553,16 @@ export class Cluster {
     })
 
     const body = Buffer.from(res.body)
+    this.runtime.signal.throwIfAborted()
     await storeVerifiedDownload(this.storage, hash, body)
   }
 
   public async requestCert(): Promise<void> {
     if (!this.socket) throw new Error('未连接到服务器')
-    const [err, cert] = (await this.socket.emitWithAck('request-cert')) as [object, {cert: string; key: string}]
+    const [err, cert] = (await abortable(this.socket.emitWithAck('request-cert'), this.runtime.signal)) as [
+      object,
+      {cert: string; key: string},
+    ]
     if (err) {
       if (typeof err === 'object' && 'message' in err) {
         throw new Error(err.message as string)
@@ -573,8 +604,8 @@ export class Cluster {
   }
 
   public gcBackground(files: IFileList): void {
-    this.storage
-      .gc(files.files)
+    const task = this.storage
+      .gc(files.files, this.runtime.signal)
       .then((res) => {
         if (res.count === 0) {
           logger.info('没有过期文件')
@@ -583,8 +614,11 @@ export class Cluster {
         }
       })
       .catch((e: unknown) => {
-        logger.error({err: e}, 'gc error')
+        if (!isAbortReason(e, this.runtime.signal)) {
+          logger.error({err: e}, 'gc error')
+        }
       })
+    void this.runtime.track(task)
   }
 
   private async enableNode(): Promise<void> {
@@ -594,18 +628,24 @@ export class Cluster {
       throw new Error('未连接到服务器')
     }
     try {
-      const res = (await this.socket.timeout(ms('5m')).emitWithAck('enable', {
-        host: this.host,
-        port: this.publicPort,
-        version: this.version,
-        byoc: config.byoc,
-        noFastEnable: process.env.NO_FAST_ENABLE === 'true',
-        flavor: config.flavor,
-      })) as unknown
+      const res = (await abortable(
+        this.socket.timeout(ms('5m')).emitWithAck('enable', {
+          host: this.host,
+          port: this.publicPort,
+          version: this.version,
+          byoc: config.byoc,
+          noFastEnable: process.env.NO_FAST_ENABLE === 'true',
+          flavor: config.flavor,
+        }),
+        this.runtime.signal,
+      )) as unknown
       if (Array.isArray(res)) {
         ;[err, ack] = res as unknown[]
       }
     } catch (e) {
+      if (this.runtime.signal.aborted) {
+        throw abortReason(this.runtime.signal)
+      }
       throw new Error('节点注册超时', {cause: e})
     }
 
@@ -637,7 +677,7 @@ export class Cluster {
       }
       socket.disconnect()
     } catch (error) {
-      if (socket.connected) {
+      if (socket.connected && !this.runtime.signal.aborted) {
         this.keepalive.start(socket)
       }
       throw error

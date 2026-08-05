@@ -18,9 +18,9 @@ export interface IStorage {
 
   exists(path: string): Promise<boolean>
 
-  getMissingFiles(files: IFileInfo[]): Promise<IFileInfo[]>
+  getMissingFiles(files: IFileInfo[], signal?: AbortSignal): Promise<IFileInfo[]>
 
-  gc(files: {path: string; hash: string; size: number}[]): Promise<IGCCounter>
+  gc(files: {path: string; hash: string; size: number}[], signal?: AbortSignal): Promise<IGCCounter>
 
   serve(request: StorageDownloadRequest, res: Response): Promise<StorageDownloadResult>
 }

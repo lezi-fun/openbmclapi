@@ -7,6 +7,7 @@ export interface StorageDownloadRequest {
   method: string
   range?: string
   attachmentName?: string
+  signal?: AbortSignal
 }
 
 export interface StorageDownloadResult {

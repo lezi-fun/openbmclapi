@@ -83,6 +83,7 @@ export class OssStorage implements IStorage {
   }
 
   public async serve(request: StorageDownloadRequest, res: Response): Promise<StorageDownloadResult> {
+    request.signal?.throwIfAborted()
     const path = join(this.prefix, request.hashPath)
     let resHeaders: OSS.ResponseHeaderType | undefined
     if (request.attachmentName) {
@@ -100,7 +101,7 @@ export class OssStorage implements IStorage {
       res.status(stream.res.status)
       copyDownloadHeaders(stream.res.headers as Record<string, string | string[] | undefined>, res)
       applyAttachmentHeader(res, request)
-      await pipeline(stream.stream, res)
+      await pipeline(stream.stream, res, {signal: request.signal})
     } else {
       const url = this.client.signatureUrl(path, {
         expires: 60,
@@ -111,7 +112,7 @@ export class OssStorage implements IStorage {
     return successfulDownload(this.files.get(request.hash)?.size ?? 0, request)
   }
 
-  public async gc(files: {path: string; hash: string; size: number}[]): Promise<IGCCounter> {
+  public async gc(files: {path: string; hash: string; size: number}[], signal?: AbortSignal): Promise<IGCCounter> {
     const counter = {count: 0, size: 0}
     const fileSet = new Set<string>()
     for (const file of files) {
@@ -119,7 +120,9 @@ export class OssStorage implements IStorage {
     }
     let list = await this.client.list({prefix: this.prefix, 'max-keys': 1000}, {})
     while (list.objects.length > 0) {
+      signal?.throwIfAborted()
       for (const item of list.objects) {
+        signal?.throwIfAborted()
         if (!item.name) continue
         const path = basename(item.name.replace(this.prefix, ''))
         if (!fileSet.has(path)) {
@@ -136,7 +139,7 @@ export class OssStorage implements IStorage {
     return counter
   }
 
-  public async getMissingFiles(files: IFileInfo[]): Promise<IFileInfo[]> {
+  public async getMissingFiles(files: IFileInfo[], signal?: AbortSignal): Promise<IFileInfo[]> {
     const remoteFileList = new Map(files.map((file) => [file.hash, file]))
     if (this.files.size !== 0) {
       for (const hash of this.files.keys()) {
@@ -147,7 +150,9 @@ export class OssStorage implements IStorage {
 
     let list = await this.client.list({prefix: this.prefix, 'max-keys': 1000}, {})
     while (list.objects.length > 0) {
+      signal?.throwIfAborted()
       for (const item of list.objects) {
+        signal?.throwIfAborted()
         if (!item.name) continue
         const hash = basename(item.name)
         const existsFile = remoteFileList.get(hash)

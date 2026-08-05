@@ -9,6 +9,7 @@ type RefreshTimer = ReturnType<typeof setTimeout>
 
 export interface TokenManagerOptions {
   client?: Got
+  signal?: AbortSignal
   schedule?: (callback: () => void, delay: number) => RefreshTimer
   cancel?: (timer: RefreshTimer) => void
   refreshRetryDelay?: number
@@ -37,6 +38,7 @@ export class TokenManager {
       options.client ??
       got.extend({
         prefixUrl: this.prefixUrl,
+        signal: options.signal,
         headers: {
           'user-agent': `openbmclapi-cluster/${version}`,
         },

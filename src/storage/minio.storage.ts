@@ -106,6 +106,7 @@ export class MinioStorage implements IStorage {
   }
 
   public async serve(request: StorageDownloadRequest, res: Response): Promise<StorageDownloadResult> {
+    request.signal?.throwIfAborted()
     const path = minioObjectKey(this.prefix, request.hashPath)
     let resHeaders: {'response-content-disposition': string} | undefined
     if (request.attachmentName) {
@@ -114,11 +115,12 @@ export class MinioStorage implements IStorage {
       }
     }
     const url = await this.client.presignedGetObject(this.bucket, path, 60, resHeaders)
+    request.signal?.throwIfAborted()
     res.redirect(url)
     return successfulDownload(this.files.get(request.hash)?.size ?? 0, request)
   }
 
-  public async gc(files: {path: string; hash: string; size: number}[]): Promise<IGCCounter> {
+  public async gc(files: {path: string; hash: string; size: number}[], signal?: AbortSignal): Promise<IGCCounter> {
     const counter = {count: 0, size: 0}
     const fileSet = new Set<string>()
     for (const file of files) {
@@ -126,6 +128,7 @@ export class MinioStorage implements IStorage {
     }
     const scanStream = this.internalClient.listObjectsV2(this.bucket, minioObjectPrefix(this.prefix))
     for await (const file of scanStream) {
+      signal?.throwIfAborted()
       const item = file as BucketItem
       if (!item.name) continue
       const path = minioRelativePath(this.prefix, item.name)
@@ -143,7 +146,7 @@ export class MinioStorage implements IStorage {
     return counter
   }
 
-  public async getMissingFiles(files: IFileInfo[]): Promise<IFileInfo[]> {
+  public async getMissingFiles(files: IFileInfo[], signal?: AbortSignal): Promise<IFileInfo[]> {
     const remoteFileList = new Map(files.map((file) => [file.hash, file]))
     if (this.files.size !== 0) {
       for (const hash of this.files.keys()) {
@@ -154,6 +157,7 @@ export class MinioStorage implements IStorage {
 
     const scanStream = this.internalClient.listObjectsV2(this.bucket, minioObjectPrefix(this.prefix), true)
     for await (const file of scanStream) {
+      signal?.throwIfAborted()
       const item = file as BucketItem
       if (!item.name) continue
       const path = minioRelativePath(this.prefix, item.name)
