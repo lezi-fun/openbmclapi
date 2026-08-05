@@ -123,6 +123,91 @@ bun run start
 | 代码检查 | `npm run lint` | `bun run lint` |
 | 完整检查 | `npm run check` | `bun run check` |
 
+## 从 v1 迁移
+
+以下步骤适用于源码安装的 v1 节点。迁移会保留原有 `.env` 和 `cache/`，不需要重新同步
+已经缓存的文件。操作前先停止正在运行的 v1 进程、systemd 服务或进程管理器任务，避免
+新旧版本同时写入缓存。
+
+### 1. 升级 Node.js
+
+现代版支持 Node.js 24、25 和 26，生产环境推荐安装 Node.js 24 LTS。请从
+[Node.js 官方下载页](https://nodejs.org/en/download) 安装对应操作系统和架构的版本。
+Node.js 25 已结束维护，仅作为兼容范围保留，不建议新安装。然后确认版本：
+
+```bash
+node --version
+```
+
+输出应为 `v24.x`、`v25.x` 或 `v26.x`。不要继续使用 v1 时代的旧 Node.js，也不要安装
+超出 `package.json` 支持范围的 Node.js 27 或更高版本。
+
+### 2. 安装 Bun
+
+Bun 是现代 JavaScript/TypeScript 一体化工具链。本项目推荐使用 Bun 安装依赖和运行
+项目脚本，但生产服务仍由 Node.js 执行。
+
+macOS 或 Linux：
+
+```bash
+curl -fsSL https://bun.com/install | bash
+```
+
+Windows PowerShell：
+
+```powershell
+powershell -c "irm bun.sh/install.ps1 | iex"
+```
+
+重新打开终端后确认安装成功：
+
+```bash
+bun --version
+```
+
+更多安装方式见 [Bun 官方安装文档](https://bun.com/docs/installation)。
+
+### 3. 保留缓存并更新源码
+
+进入原 v1 安装目录，先确认缓存和配置仍在，然后备份配置文件：
+
+```bash
+cd /opt/openbmclapi
+du -sh cache
+cp .env .env.v1-backup
+```
+
+将仓库切换到现代维护版并执行快进更新：
+
+```bash
+git status --short
+git remote set-url origin https://github.com/lezi-fun/openbmclapi.git
+git fetch origin
+git switch master
+git pull --ff-only origin master
+```
+
+`cache/` 已被 Git 忽略，上述命令不会删除其中的文件。不要运行 `rm -rf cache`、
+`git clean -fdx` 或重新创建空的 `cache/`。如果 `git status` 显示你修改过受版本控制的
+文件，请先单独备份这些修改，不要强制覆盖。
+
+安装依赖、构建并验证：
+
+```bash
+bun install
+bun run build
+bun run check
+```
+
+确认检查通过后，继续使用原来的 `.env` 和 `cache/` 启动：
+
+```bash
+bun run start
+```
+
+如果原服务由 systemd、Supervisor 或其他进程管理器托管，请保持原有工作目录、`.env`
+和缓存路径，只将启动命令更新为 `bun run start`，然后重启对应服务。
+
 ### 设置参数
 
 在项目根目录创建一个文件, 名为 `.env`
