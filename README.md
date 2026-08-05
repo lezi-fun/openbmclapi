@@ -181,7 +181,7 @@ cp .env .env.v1-backup
 后面的 Bun 命令：
 
 ```bash
-set -euo pipefail
+bash -euo pipefail <<'OPENBMCLAPI_MIGRATE'
 test -d .git
 git status --short
 git remote set-url origin https://github.com/lezi-fun/openbmclapi.git
@@ -189,22 +189,25 @@ git fetch origin master
 git switch master
 git merge --ff-only origin/master
 node -e "const p=require('./package.json'); if (!p.version.startsWith('2.') || !p.scripts?.check || !p.scripts?.start) process.exit(1); console.log('OpenBMCLAPI', p.version)"
+OPENBMCLAPI_MIGRATE
 ```
 
 最后一条命令必须输出 `OpenBMCLAPI 2.x.x`。如果没有输出或命令失败，说明源码没有完成
-更新，此时 `check` 和 `start` 脚本也不会存在。
+更新，此时 `check` 和 `start` 脚本也不会存在。严格错误处理只在临时 Bash 子进程中
+生效；即使迁移失败，也不会修改当前 SSH shell 的设置或主动断开连接。
 
 如果原 v1 是 Release 压缩包、目录中没有 `.git/`，不要在旧目录内执行 Git 命令。将 v2
 安装到相邻目录，并通过符号链接继续使用原缓存：
 
 ```bash
-set -euo pipefail
+bash -euo pipefail <<'OPENBMCLAPI_MIGRATE'
 cd /opt
 git clone https://github.com/lezi-fun/openbmclapi.git openbmclapi-v2
 [ ! -f /opt/openbmclapi/.env ] || cp /opt/openbmclapi/.env /opt/openbmclapi-v2/.env
 ln -s /opt/openbmclapi/cache /opt/openbmclapi-v2/cache
 cd /opt/openbmclapi-v2
 node -e "const p=require('./package.json'); if (!p.version.startsWith('2.') || !p.scripts?.check || !p.scripts?.start) process.exit(1); console.log('OpenBMCLAPI', p.version)"
+OPENBMCLAPI_MIGRATE
 ```
 
 `cache/` 已被 Git 忽略，快进更新不会删除其中的文件；Release 迁移方式也只是链接原缓存。
