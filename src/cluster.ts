@@ -17,12 +17,12 @@ import ms from 'ms'
 import pMap from 'p-map'
 import pRetry from 'p-retry'
 import prettyBytes from 'pretty-bytes'
-import {connect, Socket} from 'socket.io-client'
 import {Tail} from 'tail'
 import {config, type OpenbmclapiAgentConfiguration} from './config.js'
 import {ClusterLifecycle, type ClusterLifecycleState} from './cluster-lifecycle.js'
 import {rainbowText} from './console-style.js'
 import {ControllerClient} from './controller-client.js'
+import {ControllerSocket, type NodeRegistrationPayload} from './controller-socket.js'
 import {storeVerifiedDownload} from './download.js'
 import {validateFile} from './file.js'
 import {pathExists, writeFileWithParents} from './fs.js'
@@ -30,7 +30,7 @@ import {Keepalive} from './keepalive.js'
 import {logger} from './logger.js'
 import {AuthRouteFactory} from './routes/auth.route.js'
 import MeasureRouteFactory from './routes/measure.route.js'
-import {abortable, abortReason, isAbortReason, RuntimeLifecycle} from './runtime-lifecycle.js'
+import {abortReason, isAbortReason, RuntimeLifecycle} from './runtime-lifecycle.js'
 import {getStorage, type IStorage} from './storage/base.storage.js'
 import {normalizeAttachmentName, type StorageDownloadRequest} from './storage/download-response.js'
 import type {TokenManager} from './token.js'
@@ -59,17 +59,17 @@ export class Cluster {
   private readonly publicPort: number
   private readonly controller: ControllerClient
   private readonly tmpDir = join(tmpdir(), 'openbmclapi')
-  private readonly keepalive = new Keepalive(ms('1m'), this)
+  private readonly keepalive: Keepalive
   private readonly downloadPromise = new Map<string, Promise<void>>()
   private readonly lifecycle: ClusterLifecycle
-  private socket?: Socket
+  private readonly controllerSocket: ControllerSocket
 
   private server?: ClusterServer
 
   public constructor(
     private readonly clusterSecret: string,
     private readonly version: string,
-    private readonly tokenManager: TokenManager,
+    tokenManager: TokenManager,
     private readonly runtime: RuntimeLifecycle = new RuntimeLifecycle(),
     controller?: ControllerClient,
   ) {
@@ -82,6 +82,30 @@ export class Cluster {
       async () => await this.enableNode(),
       async () => await this.disableNode(),
     )
+    this.keepalive = new Keepalive(ms('1m'), this)
+    this.controllerSocket = new ControllerSocket(this.prefixUrl, tokenManager, runtime.signal, {
+      handlers: {
+        onAuthenticationError: (error) => {
+          logger.error(error, 'get token error')
+          this.exit(1)
+        },
+        onConnectionError: (event, error) => this.onConnectionError(event, error),
+        onDisconnect: (reason) => {
+          logger.warn(`与服务器断开连接: ${reason}`)
+          this.lifecycle.markDisconnected()
+          this.keepalive.stop()
+        },
+        onReconnect: (attempt) => {
+          logger.info(`在重试${attempt}次后恢复连接`)
+          if (this.wantEnable) {
+            logger.info('正在尝试重新启用服务')
+            this.enable()
+              .then(() => logger.info('重试连接并且准备就绪'))
+              .catch((error: Error) => this.onConnectionError('reconnect', error))
+          }
+        },
+      },
+    })
     this.storage = getStorage(config)
   }
 
@@ -376,82 +400,11 @@ export class Cluster {
   }
 
   public connect(): void {
-    if (this.socket) {
-      if (!this.socket.connected) {
-        this.socket.connect()
-      }
-      return
-    }
-    this.socket = connect(this.prefixUrl, {
-      transports: ['websocket'],
-      auth: (cb) => {
-        this.tokenManager
-          .getToken()
-          .then((token) => {
-            cb({token})
-          })
-          .catch((e) => {
-            logger.error(e, 'get token error')
-            this.exit(1)
-          })
-      },
-    })
-    this.socket.on('error', this.onConnectionError.bind(this, 'error'))
-    this.socket.on('message', (msg) => {
-      logger.info(msg)
-    })
-    this.socket.on('connect', () => {
-      logger.debug('connected')
-    })
-    this.socket.on('disconnect', (reason) => {
-      logger.warn(`与服务器断开连接: ${reason}`)
-      this.lifecycle.markDisconnected()
-      this.keepalive.stop()
-    })
-    this.socket.on('exception', (err) => {
-      logger.error(err, 'exception')
-    })
-    this.socket.on('warden-error', (data) => {
-      logger.warn(data, '主控回报巡检异常')
-    })
-
-    const io = this.socket.io
-    io.on('reconnect', (attempt: number) => {
-      logger.info(`在重试${attempt}次后恢复连接`)
-      if (this.wantEnable) {
-        logger.info('正在尝试重新启用服务')
-        this.enable()
-          .then(() => logger.info('重试连接并且准备就绪'))
-          .catch(this.onConnectionError.bind(this, 'reconnect'))
-      }
-    })
-    io.on('reconnect_error', (err) => {
-      logger.error(err, 'reconnect_error')
-    })
-    io.on('reconnect_failed', this.onConnectionError.bind(this, 'reconnect_failed', new Error('reconnect failed')))
+    this.controllerSocket.connect()
   }
 
   public async portCheck(): Promise<void> {
-    if (!this.socket) throw new Error('未连接到服务器')
-    const [err, ack] = (await abortable(
-      this.socket.emitWithAck('port-check', {
-        host: this.host,
-        port: this.publicPort,
-        version: this.version,
-        byoc: config.byoc,
-        noFastEnable: process.env.NO_FAST_ENABLE === 'true',
-        flavor: config.flavor,
-      }),
-      this.runtime.signal,
-    )) as [object, boolean]
-    if (err) {
-      if (typeof err === 'object' && 'message' in err) {
-        throw new Error(err.message as string)
-      }
-    }
-    if (!ack) {
-      throw new Error('检查端口失败')
-    }
+    await this.controllerSocket.portCheck(this.nodeRegistrationPayload)
   }
 
   public async enable(): Promise<void> {
@@ -466,7 +419,7 @@ export class Cluster {
 
   public disconnect(): void {
     this.keepalive.stop()
-    this.socket?.disconnect()
+    this.controllerSocket.disconnect()
   }
 
   public async downloadFile(hash: string): Promise<void> {
@@ -476,18 +429,7 @@ export class Cluster {
   }
 
   public async requestCert(): Promise<void> {
-    if (!this.socket) throw new Error('未连接到服务器')
-    const [err, cert] = (await abortable(this.socket.emitWithAck('request-cert'), this.runtime.signal)) as [
-      object,
-      {cert: string; key: string},
-    ]
-    if (err) {
-      if (typeof err === 'object' && 'message' in err) {
-        throw new Error(err.message as string)
-      } else {
-        throw new Error('请求证书失败', {cause: err})
-      }
-    }
+    const cert = await this.controllerSocket.requestCert()
     await writeFileWithParents(join(this.tmpDir, 'cert.pem'), cert.cert)
     await writeFileWithParents(join(this.tmpDir, 'key.pem'), cert.key)
   }
@@ -540,65 +482,33 @@ export class Cluster {
   }
 
   private async enableNode(): Promise<void> {
-    let err: unknown
-    let ack: unknown
-    if (!this.socket) {
-      throw new Error('未连接到服务器')
-    }
-    try {
-      const res = (await abortable(
-        this.socket.timeout(ms('5m')).emitWithAck('enable', {
-          host: this.host,
-          port: this.publicPort,
-          version: this.version,
-          byoc: config.byoc,
-          noFastEnable: process.env.NO_FAST_ENABLE === 'true',
-          flavor: config.flavor,
-        }),
-        this.runtime.signal,
-      )) as unknown
-      if (Array.isArray(res)) {
-        ;[err, ack] = res as unknown[]
-      }
-    } catch (e) {
-      if (this.runtime.signal.aborted) {
-        throw abortReason(this.runtime.signal)
-      }
-      throw new Error('节点注册超时', {cause: e})
-    }
-
-    if (err) {
-      if (typeof err === 'object' && 'message' in err) {
-        throw new Error(err.message as string)
-      }
-    }
-    if (ack !== true) {
-      throw new Error('节点注册失败')
-    }
-
+    await this.controllerSocket.enable(this.nodeRegistrationPayload)
     logger.info(rainbowText('start doing my job'))
-    this.keepalive.start(this.socket)
+    this.keepalive.start(this.controllerSocket)
   }
 
   private async disableNode(): Promise<void> {
     this.keepalive.stop()
-    const socket = this.socket
-    if (!socket?.connected) return
+    if (!this.controllerSocket.connected) return
 
     try {
-      const [err, ack] = (await socket.emitWithAck('disable', null)) as [object, boolean]
-      if (err && typeof err === 'object' && 'message' in err) {
-        throw new Error(err.message as string)
-      }
-      if (!ack) {
-        throw new Error('节点禁用失败')
-      }
-      socket.disconnect()
+      await this.controllerSocket.disable()
     } catch (error) {
-      if (socket.connected && !this.runtime.signal.aborted) {
-        this.keepalive.start(socket)
+      if (this.controllerSocket.connected && !this.runtime.signal.aborted) {
+        this.keepalive.start(this.controllerSocket)
       }
       throw error
+    }
+  }
+
+  private get nodeRegistrationPayload(): NodeRegistrationPayload {
+    return {
+      host: this.host,
+      port: this.publicPort,
+      version: this.version,
+      byoc: config.byoc,
+      noFastEnable: process.env.NO_FAST_ENABLE === 'true',
+      flavor: config.flavor,
     }
   }
 

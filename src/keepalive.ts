@@ -2,13 +2,17 @@ import {clearTimeout} from 'node:timers'
 import ms from 'ms'
 import pTimeout from 'p-timeout'
 import prettyBytes from 'pretty-bytes'
-import type {Socket} from 'socket.io-client'
 import type {Cluster} from './cluster.js'
+import type {KeepAlivePayload} from './controller-socket.js'
 import {logger} from './logger.js'
+
+interface KeepAliveTransport {
+  keepAlive(payload: KeepAlivePayload): Promise<boolean>
+}
 
 export class Keepalive {
   public timer?: NodeJS.Timeout
-  private socket?: Socket
+  private transport?: KeepAliveTransport
   private keepAliveError = 0
 
   constructor(
@@ -16,8 +20,8 @@ export class Keepalive {
     private readonly cluster: Cluster,
   ) {}
 
-  public start(socket: Socket): void {
-    this.socket = socket
+  public start(transport: KeepAliveTransport): void {
+    this.transport = transport
     this.schedule()
   }
 
@@ -62,22 +66,20 @@ export class Keepalive {
     if (!this.cluster.isEnabled) {
       throw new Error('节点未启用')
     }
-    if (!this.socket) {
+    if (!this.transport) {
       throw new Error('未连接到服务器')
     }
 
     const counters = {...this.cluster.counters}
-    const [err, date] = (await this.socket.emitWithAck('keep-alive', {
+    const status = await this.transport.keepAlive({
       time: new Date(),
       ...counters,
-    })) as [object, unknown]
-
-    if (err) throw new Error('keep alive error', {cause: err})
+    })
     const bytes = prettyBytes(counters.bytes, {binary: true})
     logger.info(`keep alive success, serve ${counters.hits} files, ${bytes}`)
     this.cluster.counters.hits -= counters.hits
     this.cluster.counters.bytes -= counters.bytes
-    return !!date
+    return status
   }
 
   private async restart(): Promise<void> {
