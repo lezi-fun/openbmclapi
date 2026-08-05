@@ -169,50 +169,54 @@ bun --version
 
 ### 3. 保留缓存并更新源码
 
-先停止 v1 服务。进入原 v1 安装目录，确认缓存和配置仍在，然后备份配置文件：
+先停止 v1 服务并进入原 v1 安装目录。下面的命令都应逐行执行；不要复制终端提示符，
+例如 `root@server:~#` 或 `user@mac %`。
 
 ```bash
-cd /opt/openbmclapi
+pwd
 du -sh cache
-cp .env .env.v1-backup
+[ ! -f .env ] || cp .env .env.v1-backup
 ```
 
-如果目录中存在 `.git/`，使用下面的命令更新。任何一步失败都应立即停止，不要继续执行
-后面的 Bun 命令：
+`pwd` 必须显示实际的 v1 安装目录，`du` 必须能读取现有缓存。任何命令报错都应停下，
+不要继续执行后面的命令。
+
+如果目录中存在 `.git/`，使用下面的命令更新：
 
 ```bash
-bash -euo pipefail <<'OPENBMCLAPI_MIGRATE'
-test -d .git
+test -d .git && echo 'Git 仓库正常'
 git status --short
 git remote set-url origin https://github.com/lezi-fun/openbmclapi.git
 git fetch origin master
 git switch master
 git merge --ff-only origin/master
 node -e "const p=require('./package.json'); if (!p.version.startsWith('2.') || !p.scripts?.check || !p.scripts?.start) process.exit(1); console.log('OpenBMCLAPI', p.version)"
-OPENBMCLAPI_MIGRATE
 ```
 
-最后一条命令必须输出 `OpenBMCLAPI 2.x.x`。如果没有输出或命令失败，说明源码没有完成
-更新，此时 `check` 和 `start` 脚本也不会存在。严格错误处理只在临时 Bash 子进程中
-生效；即使迁移失败，也不会修改当前 SSH shell 的设置或主动断开连接。
+第一条命令必须输出 `Git 仓库正常`。如果 `git status --short` 有输出，先备份对应修改，
+不要直接合并。最后一条命令必须输出 `OpenBMCLAPI 2.x.x`；否则说明源码没有完成更新，
+此时 `check` 和 `start` 脚本也不会存在。
 
-如果原 v1 是 Release 压缩包、目录中没有 `.git/`，不要在旧目录内执行 Git 命令。将 v2
-安装到相邻目录，并通过符号链接继续使用原缓存：
+如果原 v1 是 Release 压缩包、目录中没有 `.git/`，不要在旧目录内执行 Git 命令。
+保持当前目录为 v1 安装目录，将 v2 安装到当前用户可写的主目录，并链接原缓存：
 
 ```bash
-bash -euo pipefail <<'OPENBMCLAPI_MIGRATE'
-cd /opt
-git clone https://github.com/lezi-fun/openbmclapi.git openbmclapi-v2
-[ ! -f /opt/openbmclapi/.env ] || cp /opt/openbmclapi/.env /opt/openbmclapi-v2/.env
-ln -s /opt/openbmclapi/cache /opt/openbmclapi-v2/cache
-cd /opt/openbmclapi-v2
+OLD_OPENBMCLAPI_DIR="$PWD"
+NEW_OPENBMCLAPI_DIR="$HOME/openbmclapi-v2"
+echo "旧版本：$OLD_OPENBMCLAPI_DIR"
+echo "新版本：$NEW_OPENBMCLAPI_DIR"
+ls -ld "$OLD_OPENBMCLAPI_DIR/cache"
+git clone https://github.com/lezi-fun/openbmclapi.git "$NEW_OPENBMCLAPI_DIR"
+[ ! -f "$OLD_OPENBMCLAPI_DIR/.env" ] || cp "$OLD_OPENBMCLAPI_DIR/.env" "$NEW_OPENBMCLAPI_DIR/.env"
+ln -s "$OLD_OPENBMCLAPI_DIR/cache" "$NEW_OPENBMCLAPI_DIR/cache"
+cd "$NEW_OPENBMCLAPI_DIR"
 node -e "const p=require('./package.json'); if (!p.version.startsWith('2.') || !p.scripts?.check || !p.scripts?.start) process.exit(1); console.log('OpenBMCLAPI', p.version)"
-OPENBMCLAPI_MIGRATE
 ```
 
-`cache/` 已被 Git 忽略，快进更新不会删除其中的文件；Release 迁移方式也只是链接原缓存。
-不要运行 `rm -rf cache`、`git clean -fdx` 或重新创建空的 `cache/`。如果 `git status`
-显示你修改过受版本控制的文件，请先单独备份这些修改，不要强制覆盖。
+这组命令不需要 `sudo`。如果 `~/openbmclapi-v2` 已存在，`git clone` 会明确报错；不要
+覆盖该目录，应检查后改用另一个新目录名。`cache/` 已被 Git 忽略，快进更新不会删除
+其中的文件；Release 迁移方式也只是链接原缓存。不要运行 `rm -rf cache`、
+`git clean -fdx` 或重新创建空的 `cache/`。
 
 安装依赖、构建并验证：
 
