@@ -28,5 +28,13 @@ export default tseslint.config(
       'n/no-unpublished-import': 'off',
     },
   },
+  {
+    files: ['test/**/*.js'],
+    rules: {
+      // Tests intentionally execute the TypeScript output generated in dist/.
+      // Lint must also work before the first build of a fresh checkout.
+      'n/no-missing-import': 'off',
+    },
+  },
   eslintPluginPrettierRecommended,
 )

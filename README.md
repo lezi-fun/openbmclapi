@@ -169,7 +169,7 @@ bun --version
 
 ### 3. 保留缓存并更新源码
 
-进入原 v1 安装目录，先确认缓存和配置仍在，然后备份配置文件：
+先停止 v1 服务。进入原 v1 安装目录，确认缓存和配置仍在，然后备份配置文件：
 
 ```bash
 cd /opt/openbmclapi
@@ -177,25 +177,44 @@ du -sh cache
 cp .env .env.v1-backup
 ```
 
-将仓库切换到现代维护版并执行快进更新：
+如果目录中存在 `.git/`，使用下面的命令更新。任何一步失败都应立即停止，不要继续执行
+后面的 Bun 命令：
 
 ```bash
+set -euo pipefail
+test -d .git
 git status --short
 git remote set-url origin https://github.com/lezi-fun/openbmclapi.git
-git fetch origin
+git fetch origin master
 git switch master
-git pull --ff-only origin master
+git merge --ff-only origin/master
+node -e "const p=require('./package.json'); if (!p.version.startsWith('2.') || !p.scripts?.check || !p.scripts?.start) process.exit(1); console.log('OpenBMCLAPI', p.version)"
 ```
 
-`cache/` 已被 Git 忽略，上述命令不会删除其中的文件。不要运行 `rm -rf cache`、
-`git clean -fdx` 或重新创建空的 `cache/`。如果 `git status` 显示你修改过受版本控制的
-文件，请先单独备份这些修改，不要强制覆盖。
+最后一条命令必须输出 `OpenBMCLAPI 2.x.x`。如果没有输出或命令失败，说明源码没有完成
+更新，此时 `check` 和 `start` 脚本也不会存在。
+
+如果原 v1 是 Release 压缩包、目录中没有 `.git/`，不要在旧目录内执行 Git 命令。将 v2
+安装到相邻目录，并通过符号链接继续使用原缓存：
+
+```bash
+set -euo pipefail
+cd /opt
+git clone https://github.com/lezi-fun/openbmclapi.git openbmclapi-v2
+[ ! -f /opt/openbmclapi/.env ] || cp /opt/openbmclapi/.env /opt/openbmclapi-v2/.env
+ln -s /opt/openbmclapi/cache /opt/openbmclapi-v2/cache
+cd /opt/openbmclapi-v2
+node -e "const p=require('./package.json'); if (!p.version.startsWith('2.') || !p.scripts?.check || !p.scripts?.start) process.exit(1); console.log('OpenBMCLAPI', p.version)"
+```
+
+`cache/` 已被 Git 忽略，快进更新不会删除其中的文件；Release 迁移方式也只是链接原缓存。
+不要运行 `rm -rf cache`、`git clean -fdx` 或重新创建空的 `cache/`。如果 `git status`
+显示你修改过受版本控制的文件，请先单独备份这些修改，不要强制覆盖。
 
 安装依赖、构建并验证：
 
 ```bash
 bun install
-bun run build
 bun run check
 ```
 
