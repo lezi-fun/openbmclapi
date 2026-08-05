@@ -174,7 +174,7 @@ bun --version
 ```bash
 pwd
 du -sh cache
-[ ! -f .env ] || cp .env .env.v1-backup
+[ ! -f .env ] || cp .env ../openbmclapi.env.v1-backup
 ```
 
 `pwd` 必须显示实际的 v1 安装目录，`du` 必须能读取现有缓存。任何命令报错都应停下，
@@ -184,17 +184,24 @@ du -sh cache
 
 ```bash
 test -d .git && echo 'Git 仓库正常'
-git status --short
+git status --short --untracked-files=no
 git remote set-url origin https://github.com/lezi-fun/openbmclapi.git
 git fetch origin master
-git switch master
-git merge --ff-only origin/master
-node -e "const p=require('./package.json'); if (!p.version.startsWith('2.') || !p.scripts?.check || !p.scripts?.start) process.exit(1); console.log('OpenBMCLAPI', p.version)"
+git rev-list --left-right --count HEAD...origin/master
+BACKUP_BRANCH="backup/v1-before-v2-$(date +%Y%m%d-%H%M%S)"
+git branch "$BACKUP_BRANCH"
+git switch -C master origin/master
+echo "旧版本和本地提交已保存在 $BACKUP_BRANCH"
+node -e 'const p=require("./package.json"); if (!p.version.startsWith("2.") || !p.scripts?.check || !p.scripts?.start) process.exit(1); console.log("OpenBMCLAPI", p.version)'
 ```
 
-第一条命令必须输出 `Git 仓库正常`。如果 `git status --short` 有输出，先备份对应修改，
-不要直接合并。最后一条命令必须输出 `OpenBMCLAPI 2.x.x`；否则说明源码没有完成更新，
-此时 `check` 和 `start` 脚本也不会存在。
+第一条命令必须输出 `Git 仓库正常`。如果 `git status --short --untracked-files=no` 有输出，
+说明仍有未提交的受版本控制文件，应先提交或备份，不要继续。未跟踪的 `.env`、缓存、
+`bun.lock` 和日志不参与这项检查。
+
+`git rev-list` 输出左侧是本地独有提交数，右侧是远端独有提交数。无论是否分叉，当前
+HEAD 都会先保存到带时间戳的 `backup/v1-before-v2-*` 分支，再将 `master` 切换到现代版；
+本地提交不会丢失。最后一条命令必须输出 `OpenBMCLAPI 2.x.x`，否则不要继续安装依赖。
 
 如果原 v1 是 Release 压缩包、目录中没有 `.git/`，不要在旧目录内执行 Git 命令。
 保持当前目录为 v1 安装目录，将 v2 安装到当前用户可写的主目录，并链接原缓存：
@@ -209,7 +216,7 @@ git clone https://github.com/lezi-fun/openbmclapi.git "$NEW_OPENBMCLAPI_DIR"
 [ ! -f "$OLD_OPENBMCLAPI_DIR/.env" ] || cp "$OLD_OPENBMCLAPI_DIR/.env" "$NEW_OPENBMCLAPI_DIR/.env"
 ln -s "$OLD_OPENBMCLAPI_DIR/cache" "$NEW_OPENBMCLAPI_DIR/cache"
 cd "$NEW_OPENBMCLAPI_DIR"
-node -e "const p=require('./package.json'); if (!p.version.startsWith('2.') || !p.scripts?.check || !p.scripts?.start) process.exit(1); console.log('OpenBMCLAPI', p.version)"
+node -e 'const p=require("./package.json"); if (!p.version.startsWith("2.") || !p.scripts?.check || !p.scripts?.start) process.exit(1); console.log("OpenBMCLAPI", p.version)'
 ```
 
 这组命令不需要 `sudo`。如果 `~/openbmclapi-v2` 已存在，`git clone` 会明确报错；不要

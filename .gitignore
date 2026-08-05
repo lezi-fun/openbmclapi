@@ -52,6 +52,7 @@ crashlytics-build.properties
 # Logs
 logs
 *.log
+nohup.out
 
 # Runtime data
 pids
@@ -94,6 +95,7 @@ public/
 /doc
 .vscode
 .env
+.env.v1-backup
 /cache
 dist
 pkg
