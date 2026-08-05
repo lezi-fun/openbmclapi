@@ -3,13 +3,9 @@ import {cp, mkdir, mkdtemp, open, readFile, rm} from 'node:fs/promises'
 import {tmpdir, userInfo} from 'node:os'
 import {dirname, join} from 'node:path'
 import {setTimeout as delay} from 'node:timers/promises'
-import {MultiBar} from 'cli-progress'
-import {HTTPError, RequestError} from 'got'
 import ipaddr from 'ipaddr.js'
-import {template, toString} from 'lodash-es'
+import {template} from 'lodash-es'
 import ms from 'ms'
-import pMap from 'p-map'
-import pRetry from 'p-retry'
 import prettyBytes from 'pretty-bytes'
 import {Tail} from 'tail'
 import {config, type OpenbmclapiAgentConfiguration} from './config.js'
@@ -19,16 +15,15 @@ import {ControllerClient} from './controller-client.js'
 import {ControllerSocket, type NodeRegistrationPayload} from './controller-socket.js'
 import {DataPlaneServer, type DataPlaneServerInstance} from './data-plane-server.js'
 import {storeVerifiedDownload} from './download.js'
-import {validateFile} from './file.js'
+import {FileSynchronizer} from './file-synchronizer.js'
 import {pathExists, writeFileWithParents} from './fs.js'
 import {Keepalive} from './keepalive.js'
 import {logger} from './logger.js'
-import {abortReason, isAbortReason, RuntimeLifecycle} from './runtime-lifecycle.js'
+import {isAbortReason, RuntimeLifecycle} from './runtime-lifecycle.js'
 import {getStorage, type IStorage} from './storage/base.storage.js'
 import type {TokenManager} from './token.js'
 import type {IFileList} from './types.js'
 import {setupUpnp} from './upnp.js'
-import {hashToFilename} from './util.js'
 
 interface ICounters {
   hits: number
@@ -53,6 +48,7 @@ export class Cluster {
   private readonly lifecycle: ClusterLifecycle
   private readonly controllerSocket: ControllerSocket
   private readonly dataPlane: DataPlaneServer
+  private readonly synchronizer: FileSynchronizer
 
   public constructor(
     clusterSecret: string,
@@ -95,6 +91,7 @@ export class Cluster {
       },
     })
     this.storage = getStorage(config)
+    this.synchronizer = new FileSynchronizer(this.controller, this.storage, runtime)
     this.dataPlane = new DataPlaneServer({
       certDirectory: this.tmpDir,
       config: {
@@ -149,109 +146,7 @@ export class Cluster {
   }
 
   public async syncFiles(fileList: IFileList, syncConfig: OpenbmclapiAgentConfiguration['sync']): Promise<void> {
-    this.runtime.signal.throwIfAborted()
-    const storageReady = await this.storage.check()
-    if (!storageReady) {
-      throw new Error('存储异常')
-    }
-    logger.info('正在检查缺失文件')
-    const missingFiles = await this.storage.getMissingFiles(fileList.files, this.runtime.signal)
-    if (missingFiles.length === 0) {
-      return
-    }
-    logger.info(`mismatch ${missingFiles.length} files, start syncing`)
-    logger.info(syncConfig, '同步策略')
-    const multibar = new MultiBar({
-      format: ' {bar} | {filename} | {value}/{total}',
-      noTTYOutput: true,
-      notTTYSchedule: ms('10s'),
-    })
-    const totalBar = multibar.create(missingFiles.length, 0, {filename: '总文件数'})
-    const parallel = syncConfig.concurrency
-    let hasError = false
-    try {
-      await pMap(
-        missingFiles,
-        async (file) => {
-          const bar = multibar.create(file.size, 0, {filename: file.path})
-          try {
-            await pRetry(
-              async () => {
-                bar.update(0)
-                const res = await this.controller.downloadFile(file.path, (transferred) => {
-                  bar.update(transferred)
-                })
-
-                const body = Buffer.from(res.body)
-                this.runtime.signal.throwIfAborted()
-                const isFileCorrect = validateFile(body, file.hash)
-                if (!isFileCorrect) {
-                  throw new RequestError(`文件${file.path}校验失败`, new Error(`文件${file.path}校验失败`), res.request)
-                }
-                await this.storage.writeFile(hashToFilename(file.hash), body, file)
-              },
-              {
-                retries: 10,
-                signal: this.runtime.signal,
-                unref: true,
-                onFailedAttempt: async (e) => {
-                  this.runtime.signal.throwIfAborted()
-                  if (e instanceof HTTPError) {
-                    logger.debug(
-                      {redirectUrls: e.response.redirectUrls},
-                      `下载文件${file.path}失败: ${e.response.statusCode}`,
-                    )
-                    logger.trace({err: e}, toString(e.response.body))
-                  } else {
-                    logger.debug({err: e}, `下载文件${file.path}失败，正在重试`)
-                  }
-
-                  if (e instanceof RequestError) {
-                    const redirectUrls = e.response?.redirectUrls
-                    if (redirectUrls?.length) {
-                      await this.controller.reportDownloadError(file.path, redirectUrls, e.message).catch((e) => {
-                        if (!isAbortReason(e, this.runtime.signal)) {
-                          logger.error(e, '上报重定向失败')
-                        }
-                      })
-                    }
-                  }
-                },
-              },
-            )
-          } catch (e) {
-            if (this.runtime.signal.aborted) {
-              throw abortReason(this.runtime.signal)
-            }
-            hasError = true
-            if (e instanceof HTTPError) {
-              logger.error(
-                {redirectUrls: e.response.redirectUrls},
-                `下载文件${file.path}失败: ${e.response.statusCode}, url: ${e.response.url}`,
-              )
-              logger.trace({err: e}, toString(e.response.body))
-            } else {
-              logger.error({err: e}, `下载文件${file.path}失败`)
-            }
-          } finally {
-            totalBar.increment()
-            bar.stop()
-            multibar.remove(bar)
-          }
-        },
-        {
-          concurrency: parallel,
-          signal: this.runtime.signal,
-        },
-      )
-    } finally {
-      multibar.stop()
-    }
-    if (hasError) {
-      throw new Error('同步失败')
-    } else {
-      logger.info('同步完成')
-    }
+    await this.synchronizer.sync(fileList, syncConfig)
   }
 
   public setupExpress(https: boolean): DataPlaneServerInstance {
