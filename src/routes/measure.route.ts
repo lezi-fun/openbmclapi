@@ -2,7 +2,7 @@ import express, {type Router} from 'express'
 import type {Config} from '../config.js'
 import {checkSign} from '../util.js'
 
-export default function MeasureRouteFactory(config: Config): Router {
+export default function MeasureRouteFactory(config: Pick<Config, 'clusterSecret'>): Router {
   const router = express.Router()
 
   const measureRoute = router

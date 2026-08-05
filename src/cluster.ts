@@ -1,18 +1,12 @@
 import {spawn, type ChildProcess} from 'node:child_process'
-import {readFileSync} from 'node:fs'
 import {cp, mkdir, mkdtemp, open, readFile, rm} from 'node:fs/promises'
-import {createServer, type Server} from 'node:http'
-import {createSecureServer, type Http2SecureServer} from 'node:http2'
 import {tmpdir, userInfo} from 'node:os'
 import {dirname, join} from 'node:path'
 import {setTimeout as delay} from 'node:timers/promises'
 import {MultiBar} from 'cli-progress'
-import express, {type NextFunction, type Response} from 'express'
 import {HTTPError, RequestError} from 'got'
-import http2Express from 'http2-express'
 import ipaddr from 'ipaddr.js'
 import {template, toString} from 'lodash-es'
-import morgan from 'morgan'
 import ms from 'ms'
 import pMap from 'p-map'
 import pRetry from 'p-retry'
@@ -23,22 +17,18 @@ import {ClusterLifecycle, type ClusterLifecycleState} from './cluster-lifecycle.
 import {rainbowText} from './console-style.js'
 import {ControllerClient} from './controller-client.js'
 import {ControllerSocket, type NodeRegistrationPayload} from './controller-socket.js'
+import {DataPlaneServer, type DataPlaneServerInstance} from './data-plane-server.js'
 import {storeVerifiedDownload} from './download.js'
 import {validateFile} from './file.js'
 import {pathExists, writeFileWithParents} from './fs.js'
 import {Keepalive} from './keepalive.js'
 import {logger} from './logger.js'
-import {AuthRouteFactory} from './routes/auth.route.js'
-import MeasureRouteFactory from './routes/measure.route.js'
 import {abortReason, isAbortReason, RuntimeLifecycle} from './runtime-lifecycle.js'
 import {getStorage, type IStorage} from './storage/base.storage.js'
-import {normalizeAttachmentName, type StorageDownloadRequest} from './storage/download-response.js'
 import type {TokenManager} from './token.js'
 import type {IFileList} from './types.js'
 import {setupUpnp} from './upnp.js'
-import {checkSign, hashToFilename} from './util.js'
-
-type ClusterServer = Server | Http2SecureServer
+import {hashToFilename} from './util.js'
 
 interface ICounters {
   hits: number
@@ -60,14 +50,12 @@ export class Cluster {
   private readonly controller: ControllerClient
   private readonly tmpDir = join(tmpdir(), 'openbmclapi')
   private readonly keepalive: Keepalive
-  private readonly downloadPromise = new Map<string, Promise<void>>()
   private readonly lifecycle: ClusterLifecycle
   private readonly controllerSocket: ControllerSocket
-
-  private server?: ClusterServer
+  private readonly dataPlane: DataPlaneServer
 
   public constructor(
-    private readonly clusterSecret: string,
+    clusterSecret: string,
     private readonly version: string,
     tokenManager: TokenManager,
     private readonly runtime: RuntimeLifecycle = new RuntimeLifecycle(),
@@ -107,6 +95,17 @@ export class Cluster {
       },
     })
     this.storage = getStorage(config)
+    this.dataPlane = new DataPlaneServer({
+      certDirectory: this.tmpDir,
+      config: {
+        clusterSecret,
+        disableAccessLog: config.disableAccessLog,
+      },
+      counters: this.counters,
+      downloadFile: async (hash) => await this.downloadFile(hash),
+      runtime,
+      storage: this.storage,
+    })
   }
 
   public get port(): number | string {
@@ -255,78 +254,8 @@ export class Cluster {
     }
   }
 
-  public setupExpress(https: boolean): ClusterServer {
-    const app = http2Express(express)
-    app.enable('trust proxy')
-
-    app.get('/auth', AuthRouteFactory(config))
-
-    if (!config.disableAccessLog) {
-      app.use(morgan('combined'))
-    }
-    app.get('/download/:hash', async (req, res: Response, next: NextFunction) => {
-      try {
-        if (!/^\w+$/.test(req.params.hash)) {
-          return next()
-        }
-        const hash = req.params.hash.toLowerCase()
-        const signValid = checkSign(hash, this.clusterSecret, req.query as NodeJS.Dict<string>)
-        if (!signValid) {
-          return res.status(403).send('invalid sign')
-        }
-
-        const hashPath = hashToFilename(hash)
-        if (!(await this.storage.exists(hashPath))) {
-          if (this.downloadPromise.has(hash)) {
-            await this.downloadPromise.get(hash)
-          } else {
-            const promise = this.runtime.track(this.downloadFile(hash))
-            try {
-              this.downloadPromise.set(hash, promise)
-              await promise
-            } finally {
-              this.downloadPromise.delete(hash)
-            }
-          }
-        }
-        res.set('x-bmclapi-hash', hash)
-        const downloadRequest: StorageDownloadRequest = {
-          hash,
-          hashPath,
-          method: req.method,
-          range: req.headers.range,
-          attachmentName: normalizeAttachmentName(req.query.name),
-          signal: this.runtime.signal,
-        }
-        const {bytes, hits} = await this.storage.serve(downloadRequest, res)
-        this.counters.bytes += bytes
-        this.counters.hits += hits
-      } catch (err) {
-        if (err instanceof HTTPError) {
-          if (err.response.statusCode === 404) {
-            return next()
-          }
-        }
-        return next(err)
-      }
-    })
-    app.use('/measure', MeasureRouteFactory(config))
-    let server: ClusterServer
-    if (https) {
-      server = createSecureServer(
-        {
-          key: readFileSync(join(this.tmpDir, 'key.pem'), 'utf8'),
-          cert: readFileSync(join(this.tmpDir, 'cert.pem'), 'utf8'),
-          allowHTTP1: true,
-        },
-        app,
-      )
-    } else {
-      server = createServer(app)
-    }
-    this.server = server
-
-    return server
+  public setupExpress(https: boolean): DataPlaneServerInstance {
+    return this.dataPlane.setup(https)
   }
 
   public async setupNginx(pwd: string, appPort: number, proto: string): Promise<void> {
@@ -391,12 +320,11 @@ export class Cluster {
   }
 
   public async listen(): Promise<void> {
-    await new Promise<void>((resolve) => {
-      if (!this.server) {
-        throw new Error('server not setup')
-      }
-      this.server.listen(this._port, resolve)
-    })
+    await this.dataPlane.listen(this._port)
+  }
+
+  public async closeServer(): Promise<void> {
+    await this.dataPlane.close()
   }
 
   public connect(): void {
@@ -514,12 +442,6 @@ export class Cluster {
 
   private onConnectionError(event: string, err: Error): void {
     logger.error({err}, `${event}: cannot connect to server`)
-    if (this.server) {
-      this.server.close(() => {
-        this.exit(1)
-      })
-    } else {
-      this.exit(1)
-    }
+    void this.dataPlane.close().finally(() => this.exit(1))
   }
 }

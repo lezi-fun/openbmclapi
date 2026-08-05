@@ -1,9 +1,9 @@
 import type {NextFunction, Request, Response} from 'express'
 import {basename} from 'node:path'
-import {Config} from '../config.js'
+import type {Config} from '../config.js'
 import {checkSign} from '../util.js'
 
-export function AuthRouteFactory(config: Config) {
+export function AuthRouteFactory(config: Pick<Config, 'clusterSecret'>) {
   return (req: Request, res: Response, next: NextFunction) => {
     try {
       const oldUrl = req.get('x-original-uri')

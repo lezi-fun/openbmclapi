@@ -15,7 +15,6 @@ export async function bootstrap(version: string): Promise<void> {
   const runtime = new RuntimeLifecycle()
   let tokenManager: TokenManager | undefined
   let cluster: Cluster | undefined
-  let server: ReturnType<Cluster['setupExpress']> | undefined
   let checkFileInterval: NodeJS.Timeout | undefined
   let stopping = false
   let shutdownPromise: Promise<void> | undefined
@@ -70,7 +69,7 @@ export async function bootstrap(version: string): Promise<void> {
         throw new Error('cluster.port is not a number')
       }
     }
-    server = cluster.setupExpress(proto === 'https' && !config.enableNginx)
+    cluster.setupExpress(proto === 'https' && !config.enableNginx)
     await cluster.listen()
     await cluster.portCheck()
 
@@ -154,7 +153,7 @@ export async function bootstrap(version: string): Promise<void> {
   async function shutdown(signal: string): Promise<void> {
     logger.info(`got ${signal}, unregistering cluster`)
     cluster?.nginxProcess?.kill()
-    const serverClose = server ? closeServer(server) : Promise.resolve()
+    const serverClose = cluster?.closeServer() ?? Promise.resolve()
     runtime.abort(new Error(`received ${signal}`))
     tokenManager?.stop()
     if (checkFileInterval) {
@@ -175,11 +174,4 @@ export async function bootstrap(version: string): Promise<void> {
     await serverClose
     logger.info('unregister success, background tasks stopped')
   }
-}
-
-async function closeServer(server: ReturnType<Cluster['setupExpress']>): Promise<void> {
-  if (!server.listening) return
-  await new Promise<void>((resolve) => {
-    server.close(() => resolve())
-  })
 }

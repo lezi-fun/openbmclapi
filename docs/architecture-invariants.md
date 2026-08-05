@@ -10,7 +10,8 @@
 - Primary 进程只监管一个 Worker，并负责退避重启。
 - Worker 同时负责控制面连接、节点生命周期、文件同步、HTTP 数据面、存储适配、
   可选 Nginx 和 UPnP；其中 `ControllerClient` 已独立负责控制面 REST、认证和编解码，
-  `ControllerSocket` 负责 Socket.IO 协议，`Cluster` 继续负责运行时编排。
+  `ControllerSocket` 负责 Socket.IO 协议，`DataPlaneServer` 负责 HTTP/HTTP2 路由与监听，
+  `Cluster` 继续负责运行时编排。
 - 主控文件清单是缓存状态的事实源。
 - 文件以内容 hash 标识，逻辑存储键为 `<hash 前两位>/<完整 hash>`。
 
@@ -165,14 +166,16 @@ Storage V2 将 `bytes` 明确定义为成功请求逻辑交付的对象载荷字
    文件清单 Zstd/Avro 解码、配置校验、下载进度和错误上报；`Cluster` 只保留委托入口。
 9. Socket.IO 连接、WebSocket transport、认证、重连事件和 ACK 编解码已提取为
    `ControllerSocket`；节点状态决策、服务退出和计量扣减仍由原生命周期组件负责。
+10. HTTP/HTTP2 路由、签名检查、按需回源单飞、存储响应、计量、监听和关闭已提取为
+    `DataPlaneServer`；Nginx 仍作为独立的可选前置进程保留原行为。
 
 ## 迁移顺序
 
 1. 建立假主控、Socket ACK、清单编解码、存储一致性和可控时钟测试。
 2. 已完成增量同步和 MinIO GC 的代码修复及纯函数回归测试；真实 MinIO 环境仍需
    dry-run 验证后再启用删除。
-3. 已从 `Cluster` 提取显式节点状态机、控制面 REST 客户端和 Socket.IO 协议客户端且
-   未改变协议；下一步拆分 HTTP 服务和同步编排。
+3. 已从 `Cluster` 提取显式节点状态机、控制面 REST 客户端、Socket.IO 协议客户端和
+   HTTP 数据面服务且未改变协议；下一步拆分同步编排和 Nginx 进程管理。
 4. 已引入支持原子写入、统一 Range、附件名和计量语义的 Storage V2。
 5. token 刷新恢复、ACK 等待取消和全局停机取消已完成；继续完善背压和子进程恢复。
 6. 使用影子比较、单节点 canary、隔离删除和能力协商渐进发布。
