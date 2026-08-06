@@ -2,7 +2,7 @@ import {max} from 'lodash-es'
 import type {OpenbmclapiAgentConfiguration} from './config.js'
 import type {IFileList} from './types.js'
 
-interface FileListClient {
+export interface FileListClient {
   getConfiguration(): Promise<OpenbmclapiAgentConfiguration>
   getFileList(lastModified?: number): Promise<IFileList>
   syncFiles(fileList: IFileList, syncConfig: OpenbmclapiAgentConfiguration['sync']): Promise<void>

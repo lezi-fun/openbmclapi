@@ -1,21 +1,19 @@
 import nodeCluster from 'node:cluster'
 import {join} from 'node:path'
 import {HTTPError} from 'got'
-import ms from 'ms'
 import {Cluster} from './cluster.js'
 import {greenText, rainbowText} from './console-style.js'
 import {config} from './config.js'
-import {refreshFileList} from './file-list.js'
+import {FileListScheduler} from './file-list-scheduler.js'
 import {logger} from './logger.js'
-import {isAbortReason, RuntimeLifecycle} from './runtime-lifecycle.js'
+import {RuntimeLifecycle} from './runtime-lifecycle.js'
 import {TokenManager} from './token.js'
-import {IFileList} from './types.js'
 
 export async function bootstrap(version: string): Promise<void> {
   const runtime = new RuntimeLifecycle()
   let tokenManager: TokenManager | undefined
   let cluster: Cluster | undefined
-  let checkFileInterval: NodeJS.Timeout | undefined
+  let fileListScheduler: FileListScheduler | undefined
   let stopping = false
   let shutdownPromise: Promise<void> | undefined
 
@@ -45,6 +43,7 @@ export async function bootstrap(version: string): Promise<void> {
     tokenManager = new TokenManager(config.clusterId, config.clusterSecret, version, {signal: runtime.signal})
     await tokenManager.getToken()
     cluster = new Cluster(config.clusterSecret, version, tokenManager, runtime)
+    fileListScheduler = new FileListScheduler(cluster, runtime)
     await cluster.init()
     cluster.connect()
 
@@ -100,7 +99,7 @@ export async function bootstrap(version: string): Promise<void> {
       if (nodeCluster.isWorker && typeof process.send === 'function') {
         process.send('ready')
       }
-      scheduleFileCheck(files)
+      fileListScheduler.start(files)
     } catch (e) {
       if (runtime.signal.aborted) {
         throw e
@@ -120,45 +119,13 @@ export async function bootstrap(version: string): Promise<void> {
     throw error
   }
 
-  function scheduleFileCheck(lastFileList: IFileList): void {
-    if (runtime.signal.aborted) return
-    checkFileInterval = setTimeout(() => {
-      if (runtime.signal.aborted) return
-      const task = runtime.track(checkFile(lastFileList))
-      void task.catch((error) => {
-        if (!isAbortReason(error, runtime.signal)) {
-          logger.error(error, 'check file error')
-        }
-      })
-    }, ms('10m'))
-    checkFileInterval.unref()
-  }
-
-  async function checkFile(lastFileList: IFileList): Promise<void> {
-    runtime.signal.throwIfAborted()
-    logger.debug('refresh files')
-    try {
-      if (!cluster) return
-      const nextFileList = await refreshFileList(cluster, lastFileList)
-      if (nextFileList === lastFileList) {
-        logger.debug('没有新文件')
-        return
-      }
-      lastFileList = nextFileList
-    } finally {
-      scheduleFileCheck(lastFileList)
-    }
-  }
-
   async function shutdown(signal: string): Promise<void> {
     logger.info(`got ${signal}, unregistering cluster`)
     cluster?.stopNginx()
     const serverClose = cluster?.closeServer() ?? Promise.resolve()
     runtime.abort(new Error(`received ${signal}`))
     tokenManager?.stop()
-    if (checkFileInterval) {
-      clearTimeout(checkFileInterval)
-    }
+    fileListScheduler?.stop()
     const disableResult = cluster ? await Promise.allSettled([cluster.disable()]) : []
     const disableError = disableResult[0]
     if (disableError?.status === 'rejected') {

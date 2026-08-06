@@ -11,8 +11,8 @@
 - Worker 同时负责控制面连接、节点生命周期、文件同步、HTTP 数据面、存储适配、
   可选 Nginx 和 UPnP；其中 `ControllerClient` 已独立负责控制面 REST、认证和编解码，
   `ControllerSocket` 负责 Socket.IO 协议，`DataPlaneServer` 负责 HTTP/HTTP2 路由与监听，
-  `FileSynchronizer` 负责缺失文件同步，`NginxService` 负责可选反向代理进程和访问日志，
-  `Cluster` 继续负责运行时编排。
+  `FileSynchronizer` 负责缺失文件同步，`FileListScheduler` 负责增量清单轮询，
+  `NginxService` 负责可选反向代理进程和访问日志，`Cluster` 继续负责运行时编排。
 - 主控文件清单是缓存状态的事实源。
 - 文件以内容 hash 标识，逻辑存储键为 `<hash 前两位>/<完整 hash>`。
 
@@ -173,15 +173,17 @@ Storage V2 将 `bytes` 明确定义为成功请求逻辑交付的对象载荷字
     提取为 `FileSynchronizer`；同时适配 `p-retry` v8 的 `{error}` 回调结构，恢复失败上报。
 12. Nginx 配置渲染、Unix socket、进程启动/停止、访问日志 tail、命中与字节计数及 60 秒
     日志截断已提取为 `NginxService`；`Cluster` 和 bootstrap 不再直接持有 Nginx 进程。
+13. 增量文件清单轮询、10 分钟定时器、取消、异常记录和清单游标已提取为
+    `FileListScheduler`；只有非空增量会替换当前清单，bootstrap 只负责启动与停止。
 
 ## 迁移顺序
 
 1. 建立假主控、Socket ACK、清单编解码、存储一致性和可控时钟测试。
 2. 已完成增量同步和 MinIO GC 的代码修复及纯函数回归测试；真实 MinIO 环境仍需
    dry-run 验证后再启用删除。
-3. 已从 `Cluster` 提取显式节点状态机、控制面 REST 客户端、Socket.IO 协议客户端、
-   HTTP 数据面服务、文件同步器和 Nginx 进程管理且未改变协议；下一步可拆分可观测性
-   与后台任务调度边界。
+3. 已从 `Cluster` 和 bootstrap 提取显式节点状态机、控制面 REST 客户端、Socket.IO
+   协议客户端、HTTP 数据面服务、文件同步器、Nginx 进程管理和清单轮询且未改变协议；
+   下一步可拆分可观测性与后台任务状态边界。
 4. 已引入支持原子写入、统一 Range、附件名和计量语义的 Storage V2。
 5. token 刷新恢复、ACK 等待取消和全局停机取消已完成；继续完善背压和子进程恢复。
 6. 使用影子比较、单节点 canary、隔离删除和能力协商渐进发布。
