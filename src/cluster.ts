@@ -1,13 +1,9 @@
-import {spawn, type ChildProcess} from 'node:child_process'
-import {cp, mkdir, mkdtemp, open, readFile, rm} from 'node:fs/promises'
-import {tmpdir, userInfo} from 'node:os'
-import {dirname, join} from 'node:path'
-import {setTimeout as delay} from 'node:timers/promises'
+import {cp, mkdir} from 'node:fs/promises'
+import {tmpdir} from 'node:os'
+import {join} from 'node:path'
 import ipaddr from 'ipaddr.js'
-import {template} from 'lodash-es'
 import ms from 'ms'
 import prettyBytes from 'pretty-bytes'
-import {Tail} from 'tail'
 import {config, type OpenbmclapiAgentConfiguration} from './config.js'
 import {ClusterLifecycle, type ClusterLifecycleState} from './cluster-lifecycle.js'
 import {rainbowText} from './console-style.js'
@@ -19,23 +15,15 @@ import {FileSynchronizer} from './file-synchronizer.js'
 import {pathExists, writeFileWithParents} from './fs.js'
 import {Keepalive} from './keepalive.js'
 import {logger} from './logger.js'
+import {NginxService, type NginxCounters} from './nginx-service.js'
 import {isAbortReason, RuntimeLifecycle} from './runtime-lifecycle.js'
 import {getStorage, type IStorage} from './storage/base.storage.js'
 import type {TokenManager} from './token.js'
 import type {IFileList} from './types.js'
 import {setupUpnp} from './upnp.js'
 
-interface ICounters {
-  hits: number
-  bytes: number
-}
-
-const rootDir = join(import.meta.dirname, '..')
-
 export class Cluster {
-  public readonly counters: ICounters = {hits: 0, bytes: 0}
-  public interval?: NodeJS.Timeout
-  public nginxProcess?: ChildProcess
+  public readonly counters: NginxCounters = {hits: 0, bytes: 0}
   public readonly storage: IStorage
 
   private readonly prefixUrl: string
@@ -49,6 +37,7 @@ export class Cluster {
   private readonly controllerSocket: ControllerSocket
   private readonly dataPlane: DataPlaneServer
   private readonly synchronizer: FileSynchronizer
+  private readonly nginx: NginxService
 
   public constructor(
     clusterSecret: string,
@@ -92,6 +81,11 @@ export class Cluster {
     })
     this.storage = getStorage(config)
     this.synchronizer = new FileSynchronizer(this.controller, this.storage, runtime)
+    this.nginx = new NginxService({
+      counters: this.counters,
+      disableAccessLog: config.disableAccessLog ?? false,
+      tmpDir: this.tmpDir,
+    })
     this.dataPlane = new DataPlaneServer({
       certDirectory: this.tmpDir,
       config: {
@@ -154,64 +148,7 @@ export class Cluster {
   }
 
   public async setupNginx(pwd: string, appPort: number, proto: string): Promise<void> {
-    this._port = '/tmp/openbmclapi.sock'
-    await rm(this._port, {force: true})
-    const dir = await mkdtemp(join(tmpdir(), 'openbmclapi'))
-    const confFile = `${dir}/nginx/nginx.conf`
-    const templateFile = 'nginx.conf'
-    const confTemplate = await readFile(join(rootDir, 'nginx', templateFile), 'utf8')
-    logger.debug({confFile}, 'nginx conf')
-
-    await cp(join(rootDir, 'nginx'), dirname(confFile), {recursive: true, force: true})
-    await writeFileWithParents(
-      confFile,
-      template(confTemplate)({
-        root: pwd,
-        port: appPort,
-        ssl: proto === 'https',
-        sock: this._port,
-        user: userInfo().username,
-        tmpdir: this.tmpDir,
-      }),
-    )
-
-    const logFile = join(rootDir, 'access.log')
-    const logFd = await open(logFile, 'a')
-    await logFd.truncate()
-
-    this.nginxProcess = spawn('nginx', ['-c', confFile], {
-      stdio: [null, logFd.fd, 'inherit'],
-    })
-
-    await delay(ms('1s'))
-
-    if (this.nginxProcess.exitCode !== null) {
-      throw new Error(`nginx exit with code ${this.nginxProcess.exitCode}`)
-    }
-
-    const tail = new Tail(logFile)
-    if (!config.disableAccessLog) {
-      tail.on('line', (line: string) => {
-        process.stdout.write(line)
-        process.stdout.write('\n')
-      })
-    }
-
-    const logRegexp =
-      /^(?<client>\S+) \S+ (?<userid>\S+) \[(?<datetime>[^\]]+)] "(?<method>[A-Z]+) (?<request>[^ "]+)? HTTP\/[0-9.]+" (?<status>[0-9]{3}) (?<size>[0-9]+|-) "(?<referrer>[^"]*)" "(?<useragent>[^"]*)"/
-    tail.on('line', (line: string) => {
-      const match = line.match(logRegexp)
-      if (!match) {
-        logger.debug(`cannot parse nginx log: ${line}`)
-        return
-      }
-      this.counters.hits++
-      this.counters.bytes += parseInt(match.groups?.size ?? '0', 10) || 0
-    })
-
-    this.interval = setInterval(() => {
-      void logFd.truncate()
-    }, ms('60s'))
+    this._port = await this.nginx.start(pwd, appPort, proto)
   }
 
   public async listen(): Promise<void> {
@@ -220,6 +157,10 @@ export class Cluster {
 
   public async closeServer(): Promise<void> {
     await this.dataPlane.close()
+  }
+
+  public stopNginx(): void {
+    this.nginx.stop()
   }
 
   public connect(): void {
@@ -279,9 +220,7 @@ export class Cluster {
   }
 
   public exit(code: number = 0): void {
-    if (this.nginxProcess) {
-      this.nginxProcess.kill()
-    }
+    this.stopNginx()
     // eslint-disable-next-line n/no-process-exit
     process.exit(code)
   }

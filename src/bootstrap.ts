@@ -152,17 +152,13 @@ export async function bootstrap(version: string): Promise<void> {
 
   async function shutdown(signal: string): Promise<void> {
     logger.info(`got ${signal}, unregistering cluster`)
-    cluster?.nginxProcess?.kill()
+    cluster?.stopNginx()
     const serverClose = cluster?.closeServer() ?? Promise.resolve()
     runtime.abort(new Error(`received ${signal}`))
     tokenManager?.stop()
     if (checkFileInterval) {
       clearTimeout(checkFileInterval)
     }
-    if (cluster?.interval) {
-      clearInterval(cluster.interval)
-    }
-
     const disableResult = cluster ? await Promise.allSettled([cluster.disable()]) : []
     const disableError = disableResult[0]
     if (disableError?.status === 'rejected') {
