@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import {createHash} from 'node:crypto'
 import test from 'node:test'
 import {DataPlaneServer} from '../dist/data-plane-server.js'
+import {TrafficMeter} from '../dist/traffic-meter.js'
 
 function deferred() {
   let resolve
@@ -34,7 +35,7 @@ test('DataPlaneServer preserves signed downloads, single-flight origin fetches, 
   let existsCalls = 0
   let downloadCalls = 0
   let trackedCalls = 0
-  const counters = {hits: 0, bytes: 0}
+  const traffic = new TrafficMeter()
   const signal = new AbortController().signal
   const storage = {
     async exists() {
@@ -51,7 +52,6 @@ test('DataPlaneServer preserves signed downloads, single-flight origin fetches, 
   const dataPlane = new DataPlaneServer({
     certDirectory: '.',
     config: {clusterSecret: secret, disableAccessLog: true},
-    counters,
     async downloadFile() {
       downloadCalls++
       await download.promise
@@ -64,6 +64,7 @@ test('DataPlaneServer preserves signed downloads, single-flight origin fetches, 
       },
     },
     storage,
+    traffic,
   })
   const server = dataPlane.setup(false)
   await dataPlane.listen(0, '127.0.0.1')
@@ -104,8 +105,7 @@ test('DataPlaneServer preserves signed downloads, single-flight origin fetches, 
       responses.map((response) => response.headers.get('x-bmclapi-hash')),
       [hash, hash],
     )
-    assert.equal(counters.hits, 2)
-    assert.equal(counters.bytes, 12)
+    assert.deepEqual(traffic.snapshot(), {hits: 2, bytes: 12})
     assert.equal(servedRequests.length, 2)
     assert.equal(servedRequests[0].hashPath, `aa/${hash}`)
     assert.equal(servedRequests[0].range, 'bytes=0-5')
@@ -121,13 +121,13 @@ test('DataPlaneServer requires setup before listening and can close before setup
   const dataPlane = new DataPlaneServer({
     certDirectory: '.',
     config: {clusterSecret: 'secret', disableAccessLog: true},
-    counters: {hits: 0, bytes: 0},
     async downloadFile() {},
     runtime: {
       signal: new AbortController().signal,
       track: (task) => task,
     },
     storage: {},
+    traffic: new TrafficMeter(),
   })
 
   await assert.rejects(dataPlane.listen(0), /server not setup/)

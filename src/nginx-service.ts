@@ -8,15 +8,11 @@ import ms from 'ms'
 import {Tail} from 'tail'
 import {logger} from './logger.js'
 import {writeFileWithParents} from './fs.js'
+import type {TrafficRecorder} from './traffic-meter.js'
 
 const sourceRoot = join(import.meta.dirname, '..')
 const accessLogPattern =
   /^(?<client>\S+) \S+ (?<userid>\S+) \[(?<datetime>[^\]]+)] "(?<method>[A-Z]+) (?<request>[^ "]+)? HTTP\/[0-9.]+" (?<status>[0-9]{3}) (?<size>[0-9]+|-) "(?<referrer>[^"]*)" "(?<useragent>[^"]*)"/
-
-export interface NginxCounters {
-  hits: number
-  bytes: number
-}
 
 export interface NginxTemplateValues {
   root: string
@@ -28,13 +24,13 @@ export interface NginxTemplateValues {
 }
 
 export interface NginxServiceOptions {
-  counters: NginxCounters
   disableAccessLog: boolean
   tmpDir: string
   socketPath?: string
   templateDirectory?: string
   spawnProcess?: typeof spawn
   tailFactory?: (path: string) => Tail
+  traffic: TrafficRecorder
   wait?: (milliseconds: number) => Promise<unknown>
 }
 
@@ -53,7 +49,7 @@ export function renderNginxConfig(source: string, values: NginxTemplateValues): 
 }
 
 export class NginxService {
-  private readonly counters: NginxCounters
+  private readonly traffic: TrafficRecorder
   private readonly disableAccessLog: boolean
   private readonly tmpDir: string
   private readonly socketPath: string
@@ -67,7 +63,7 @@ export class NginxService {
   private truncateInterval?: NodeJS.Timeout
 
   public constructor(options: NginxServiceOptions) {
-    this.counters = options.counters
+    this.traffic = options.traffic
     this.disableAccessLog = options.disableAccessLog
     this.tmpDir = options.tmpDir
     this.socketPath = options.socketPath ?? '/tmp/openbmclapi.sock'
@@ -133,8 +129,7 @@ export class NginxService {
         logger.debug(`cannot parse nginx log: ${line}`)
         return
       }
-      this.counters.hits++
-      this.counters.bytes += parsed.bytes
+      this.traffic.record({hits: 1, bytes: parsed.bytes})
     })
     tail.on('error', (error: unknown) => logger.warn({err: error}, 'nginx access log tail error'))
 

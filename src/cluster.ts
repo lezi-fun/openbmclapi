@@ -15,15 +15,16 @@ import {FileSynchronizer} from './file-synchronizer.js'
 import {pathExists, writeFileWithParents} from './fs.js'
 import {Keepalive} from './keepalive.js'
 import {logger} from './logger.js'
-import {NginxService, type NginxCounters} from './nginx-service.js'
+import {NginxService} from './nginx-service.js'
 import {isAbortReason, RuntimeLifecycle} from './runtime-lifecycle.js'
 import {getStorage, type IStorage} from './storage/base.storage.js'
 import type {TokenManager} from './token.js'
 import type {IFileList} from './types.js'
+import {TrafficMeter, type TrafficSnapshot} from './traffic-meter.js'
 import {setupUpnp} from './upnp.js'
 
 export class Cluster {
-  public readonly counters: NginxCounters = {hits: 0, bytes: 0}
+  public readonly traffic = new TrafficMeter()
   public readonly storage: IStorage
 
   private readonly prefixUrl: string
@@ -55,7 +56,7 @@ export class Cluster {
       async () => await this.enableNode(),
       async () => await this.disableNode(),
     )
-    this.keepalive = new Keepalive(ms('1m'), this)
+    this.keepalive = new Keepalive(ms('1m'), this, this.traffic)
     this.controllerSocket = new ControllerSocket(this.prefixUrl, tokenManager, runtime.signal, {
       handlers: {
         onAuthenticationError: (error) => {
@@ -82,9 +83,9 @@ export class Cluster {
     this.storage = getStorage(config)
     this.synchronizer = new FileSynchronizer(this.controller, this.storage, runtime)
     this.nginx = new NginxService({
-      counters: this.counters,
       disableAccessLog: config.disableAccessLog ?? false,
       tmpDir: this.tmpDir,
+      traffic: this.traffic,
     })
     this.dataPlane = new DataPlaneServer({
       certDirectory: this.tmpDir,
@@ -92,15 +93,19 @@ export class Cluster {
         clusterSecret,
         disableAccessLog: config.disableAccessLog,
       },
-      counters: this.counters,
       downloadFile: async (hash) => await this.downloadFile(hash),
       runtime,
       storage: this.storage,
+      traffic: this.traffic,
     })
   }
 
   public get port(): number | string {
     return this._port
+  }
+
+  public get counters(): TrafficSnapshot {
+    return this.traffic.snapshot()
   }
 
   public get lifecycleState(): ClusterLifecycleState {

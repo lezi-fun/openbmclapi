@@ -12,7 +12,8 @@
   可选 Nginx 和 UPnP；其中 `ControllerClient` 已独立负责控制面 REST、认证和编解码，
   `ControllerSocket` 负责 Socket.IO 协议，`DataPlaneServer` 负责 HTTP/HTTP2 路由与监听，
   `FileSynchronizer` 负责缺失文件同步，`FileListScheduler` 负责增量清单轮询，
-  `NginxService` 负责可选反向代理进程和访问日志，`Cluster` 继续负责运行时编排。
+  `NginxService` 负责可选反向代理进程和访问日志，`TrafficMeter` 负责流量增量和 ACK
+  快照，`Cluster` 继续负责运行时编排。
 - 主控文件清单是缓存状态的事实源。
 - 文件以内容 hash 标识，逻辑存储键为 `<hash 前两位>/<完整 hash>`。
 
@@ -175,6 +176,9 @@ Storage V2 将 `bytes` 明确定义为成功请求逻辑交付的对象载荷字
     日志截断已提取为 `NginxService`；`Cluster` 和 bootstrap 不再直接持有 Nginx 进程。
 13. 增量文件清单轮询、10 分钟定时器、取消、异常记录和清单游标已提取为
     `FileListScheduler`；只有非空增量会替换当前清单，bootstrap 只负责启动与停止。
+14. HTTP 数据面和 Nginx 只向 `TrafficMeter` 提交 `{hits, bytes}` 增量；Keepalive 读取
+    快照，并且只有主控 ACK 成功后确认快照，期间新增流量不会被清除；停止期间完成或
+    失败的旧心跳不会重新调度或触发重连，前一连接代际的 ACK 也不会清除新代际计数。
 
 ## 迁移顺序
 
@@ -183,7 +187,7 @@ Storage V2 将 `bytes` 明确定义为成功请求逻辑交付的对象载荷字
    dry-run 验证后再启用删除。
 3. 已从 `Cluster` 和 bootstrap 提取显式节点状态机、控制面 REST 客户端、Socket.IO
    协议客户端、HTTP 数据面服务、文件同步器、Nginx 进程管理和清单轮询且未改变协议；
-   下一步可拆分可观测性与后台任务状态边界。
+   `TrafficMeter` 已拆分流量计量边界；下一步可拆分后台任务状态和统一可观测性出口。
 4. 已引入支持原子写入、统一 Range、附件名和计量语义的 Storage V2。
 5. token 刷新恢复、ACK 等待取消和全局停机取消已完成；继续完善背压和子进程恢复。
 6. 使用影子比较、单节点 canary、隔离删除和能力协商渐进发布。
@@ -192,13 +196,13 @@ Storage V2 将 `bytes` 明确定义为成功请求逻辑交付的对象载荷字
 
 - Node.js 同时覆盖当前 LTS 和最新 Current 版本。
 - CI、Docker 镜像、`engines` 和 TypeScript 基础配置必须表达相同支持范围。
-- `package-lock.json` 是唯一提交的依赖锁文件，CI、发布和 Docker 继续使用
-  `npm install`。
-- Bun 是本地开发推荐的依赖安装器和脚本调度器；服务进程仍由 Node.js 运行。
+- Bun 是默认的依赖安装器和脚本调度器，CI、发布和 Docker 使用 `bun install` 与
+  `bun run`；服务进程仍由 Node.js 运行。
+- `package-lock.json` 保留给 npm 兼容安装；`bun.lock` 和 `bun.lockb` 按项目约定忽略。
 - `@mongodb-js/zstd` 的原生安装脚本必须保持在 npm `allowScripts` 和 Bun
   `trustedDependencies` 白名单中；升级该依赖时要同步审查并更新版本钉扎。
 - 生产依赖升级到最新稳定版本。
 - 工具链使用能共同满足 peer dependency 的最新组合；不能为了版本号使用
   `--force` 或 `--legacy-peer-deps`。
-- 每组 major 升级必须通过全新 `npm install`、lint、build 和协议回归测试。
+- 每组 major 升级必须通过全新 `bun install`、`bun run lint`、`bun run build` 和协议回归测试。
 - 依赖升级阶段不改变上述业务协议及正确性语义。

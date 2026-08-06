@@ -13,21 +13,17 @@ import type {RuntimeLifecycle} from './runtime-lifecycle.js'
 import type {IStorage} from './storage/base.storage.js'
 import {normalizeAttachmentName, type StorageDownloadRequest} from './storage/download-response.js'
 import {checkSign, hashToFilename} from './util.js'
+import type {TrafficRecorder} from './traffic-meter.js'
 
 export type DataPlaneServerInstance = Server | Http2SecureServer
-
-export interface DataPlaneCounters {
-  hits: number
-  bytes: number
-}
 
 export interface DataPlaneServerOptions {
   certDirectory: string
   config: Pick<Config, 'clusterSecret' | 'disableAccessLog'>
-  counters: DataPlaneCounters
   downloadFile: (hash: string) => Promise<void>
   runtime: Pick<RuntimeLifecycle, 'signal' | 'track'>
   storage: IStorage
+  traffic: TrafficRecorder
 }
 
 export class DataPlaneServer {
@@ -118,8 +114,7 @@ export class DataPlaneServer {
         signal: this.options.runtime.signal,
       }
       const {bytes, hits} = await this.options.storage.serve(downloadRequest, res)
-      this.options.counters.bytes += bytes
-      this.options.counters.hits += hits
+      this.options.traffic.record({bytes, hits})
     } catch (error) {
       if (error instanceof HTTPError && error.response.statusCode === 404) {
         next()

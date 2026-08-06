@@ -114,14 +114,17 @@ bun run start
 
 #### 常用开发命令
 
-| 作用 | npm | Bun |
-|---|---|---|
-| 开发模式 | `npm run dev` | `bun run dev` |
-| 构建 | `npm run build` | `bun run build` |
-| 启动构建产物 | `npm start` | `bun run start` |
-| 测试（包含构建） | `npm test` | `bun run test` |
-| 代码检查 | `npm run lint` | `bun run lint` |
-| 完整检查 | `npm run check` | `bun run check` |
+| 作用 | 命令 |
+|---|---|
+| 开发模式 | `bun run dev` |
+| 构建 | `bun run build` |
+| 启动构建产物 | `bun run start` |
+| 测试（包含构建） | `bun run test` |
+| 代码检查 | `bun run lint` |
+| 完整检查 | `bun run check` |
+
+`package.json` 中保留标准脚本，因此现有 npm 部署仍可兼容运行；新安装、开发和维护流程
+统一使用 Bun。
 
 ## 从 v1 迁移
 

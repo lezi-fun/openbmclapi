@@ -4,6 +4,7 @@ import {tmpdir} from 'node:os'
 import {join} from 'node:path'
 import test from 'node:test'
 import {NginxService, parseNginxAccessLog, renderNginxConfig} from '../dist/nginx-service.js'
+import {TrafficMeter} from '../dist/traffic-meter.js'
 
 test('Nginx access log parsing preserves hit and byte accounting', () => {
   assert.deepEqual(
@@ -70,12 +71,12 @@ test('NginxService owns startup configuration, access metrics, and idempotent sh
       return true
     },
   }
-  const counters = {hits: 0, bytes: 0}
+  const traffic = new TrafficMeter()
   const service = new NginxService({
-    counters,
     disableAccessLog: true,
     socketPath,
     templateDirectory,
+    traffic,
     tmpDir: join(root, 'certs'),
     spawnProcess(command, args) {
       spawnedArgs = [command, ...args]
@@ -92,7 +93,7 @@ test('NginxService owns startup configuration, access metrics, and idempotent sh
     assert.deepEqual(spawnedArgs?.slice(0, 2), ['nginx', '-c'])
     assert.match(await readFile(spawnedArgs[2], 'utf8'), /listen 4000;.*ssl on;/)
     lines.get('line')('127.0.0.1 - - [05/Aug/2026:03:40:43 +0000] "GET / HTTP/1.1" 200 7 "-" "test"')
-    assert.deepEqual(counters, {hits: 1, bytes: 7})
+    assert.deepEqual(traffic.snapshot(), {hits: 1, bytes: 7})
   } finally {
     service.stop()
     service.stop()

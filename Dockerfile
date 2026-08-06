@@ -1,21 +1,21 @@
 ARG BASE_IMAGE=node:26.5.0-bookworm-slim
-FROM $BASE_IMAGE AS install
+ARG BUN_IMAGE=oven/bun:1.3.14
+FROM $BUN_IMAGE AS bun
+FROM $BASE_IMAGE AS dependencies
 
 WORKDIR /opt/openbmclapi
-RUN apt update && \
-    apt install -y build-essential python3
-COPY package-lock.json package.json tsconfig.json ./
-RUN npm install
-COPY src ./src
-RUN npm run build
-
-FROM $BASE_IMAGE AS modules
-WORKDIR /opt/openbmclapi
-
-RUN apt update && \
-    apt install -y build-essential python3
+COPY --from=bun /usr/local/bin/bun /usr/local/bin/bun
 COPY package-lock.json package.json ./
-RUN npm install --omit=dev
+RUN bun install
+
+FROM dependencies AS install
+
+COPY tsconfig.json ./
+COPY src ./src
+RUN bun run build
+
+FROM dependencies AS modules
+RUN rm -rf node_modules && bun install --production
 
 FROM $BASE_IMAGE AS build
 
